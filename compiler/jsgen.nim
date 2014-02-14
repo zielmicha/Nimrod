@@ -233,109 +233,128 @@ proc genOr(p: PProc, a, b: PNode, r: var TCompRes) =
 
 type
   TMagicFrmt = array[0..3, string]
-  TMagicOps = array[mAddI..mStrToStr, TMagicFrmt]
+  TSupportedMagic = mAddI..mStrToStr
+  TMagicOps = array[TSupportedMagic, TMagicFrmt]
 
-const # magic checked op; magic unchecked op; checked op; unchecked op
-  jsOps: TMagicOps = [
-    ["addInt", "", "addInt($1, $2)", "($1 + $2)"], # AddI
-    ["subInt", "", "subInt($1, $2)", "($1 - $2)"], # SubI
-    ["mulInt", "", "mulInt($1, $2)", "($1 * $2)"], # MulI
-    ["divInt", "", "divInt($1, $2)", "Math.floor($1 / $2)"], # DivI
-    ["modInt", "", "modInt($1, $2)", "Math.floor($1 % $2)"], # ModI
-    ["addInt64", "", "addInt64($1, $2)", "($1 + $2)"], # AddI64
-    ["subInt64", "", "subInt64($1, $2)", "($1 - $2)"], # SubI64
-    ["mulInt64", "", "mulInt64($1, $2)", "($1 * $2)"], # MulI64
-    ["divInt64", "", "divInt64($1, $2)", "Math.floor($1 / $2)"], # DivI64
-    ["modInt64", "", "modInt64($1, $2)", "Math.floor($1 % $2)"], # ModI64
-    ["", "", "($1 + $2)", "($1 + $2)"], # AddF64
-    ["", "", "($1 - $2)", "($1 - $2)"], # SubF64
-    ["", "", "($1 * $2)", "($1 * $2)"], # MulF64
-    ["", "", "($1 / $2)", "($1 / $2)"], # DivF64
-    ["", "", "($1 >>> $2)", "($1 >>> $2)"], # ShrI
-    ["", "", "($1 << $2)", "($1 << $2)"], # ShlI
-    ["", "", "($1 & $2)", "($1 & $2)"], # BitandI
-    ["", "", "($1 | $2)", "($1 | $2)"], # BitorI
-    ["", "", "($1 ^ $2)", "($1 ^ $2)"], # BitxorI
-    ["nimMin", "nimMin", "nimMin($1, $2)", "nimMin($1, $2)"], # MinI
-    ["nimMax", "nimMax", "nimMax($1, $2)", "nimMax($1, $2)"], # MaxI
-    ["", "", "($1 >>> $2)", "($1 >>> $2)"], # ShrI64
-    ["", "", "($1 << $2)", "($1 << $2)"], # ShlI64
-    ["", "", "($1 & $2)", "($1 & $2)"], # BitandI64
-    ["", "", "($1 | $2)", "($1 | $2)"], # BitorI64
-    ["", "", "($1 ^ $2)", "($1 ^ $2)"], # BitxorI64
-    ["nimMin", "nimMin", "nimMin($1, $2)", "nimMin($1, $2)"], # MinI64
-    ["nimMax", "nimMax", "nimMax($1, $2)", "nimMax($1, $2)"], # MaxI64
-    ["nimMin", "nimMin", "nimMin($1, $2)", "nimMin($1, $2)"], # MinF64
-    ["nimMax", "nimMax", "nimMax($1, $2)", "nimMax($1, $2)"], # MaxF64
-    ["AddU", "AddU", "AddU($1, $2)", "AddU($1, $2)"], # AddU
-    ["SubU", "SubU", "SubU($1, $2)", "SubU($1, $2)"], # SubU
-    ["MulU", "MulU", "MulU($1, $2)", "MulU($1, $2)"], # MulU
-    ["DivU", "DivU", "DivU($1, $2)", "DivU($1, $2)"], # DivU
-    ["ModU", "ModU", "ModU($1, $2)", "ModU($1, $2)"], # ModU
-    ["", "", "($1 == $2)", "($1 == $2)"], # EqI
-    ["", "", "($1 <= $2)", "($1 <= $2)"], # LeI
-    ["", "", "($1 < $2)", "($1 < $2)"], # LtI
-    ["", "", "($1 == $2)", "($1 == $2)"], # EqI64
-    ["", "", "($1 <= $2)", "($1 <= $2)"], # LeI64
-    ["", "", "($1 < $2)", "($1 < $2)"], # LtI64
-    ["", "", "($1 == $2)", "($1 == $2)"], # EqF64
-    ["", "", "($1 <= $2)", "($1 <= $2)"], # LeF64
-    ["", "", "($1 < $2)", "($1 < $2)"], # LtF64
-    ["LeU", "LeU", "LeU($1, $2)", "LeU($1, $2)"], # LeU
-    ["LtU", "LtU", "LtU($1, $2)", "LtU($1, $2)"], # LtU
-    ["LeU64", "LeU64", "LeU64($1, $2)", "LeU64($1, $2)"], # LeU64
-    ["LtU64", "LtU64", "LtU64($1, $2)", "LtU64($1, $2)"], # LtU64
-    ["", "", "($1 == $2)", "($1 == $2)"], # EqEnum
-    ["", "", "($1 <= $2)", "($1 <= $2)"], # LeEnum
-    ["", "", "($1 < $2)", "($1 < $2)"], # LtEnum
-    ["", "", "($1 == $2)", "($1 == $2)"], # EqCh
-    ["", "", "($1 <= $2)", "($1 <= $2)"], # LeCh
-    ["", "", "($1 < $2)", "($1 < $2)"], # LtCh
-    ["", "", "($1 == $2)", "($1 == $2)"], # EqB
-    ["", "", "($1 <= $2)", "($1 <= $2)"], # LeB
-    ["", "", "($1 < $2)", "($1 < $2)"], # LtB
-    ["", "", "($1 == $2)", "($1 == $2)"], # EqRef
-    ["", "", "($1 == $2)", "($1 == $2)"], # EqUntracedRef
-    ["", "", "($1 <= $2)", "($1 <= $2)"], # LePtr
-    ["", "", "($1 < $2)", "($1 < $2)"], # LtPtr
-    ["", "", "($1 == $2)", "($1 == $2)"], # EqCString
-    ["", "", "($1 != $2)", "($1 != $2)"], # Xor
-    ["", "", "($1 == $2)", "($1 == $2)"], # EqProc
-    ["NegInt", "", "NegInt($1)", "-($1)"], # UnaryMinusI
-    ["NegInt64", "", "NegInt64($1)", "-($1)"], # UnaryMinusI64
-    ["AbsInt", "", "AbsInt($1)", "Math.abs($1)"], # AbsI
-    ["AbsInt64", "", "AbsInt64($1)", "Math.abs($1)"], # AbsI64
-    ["", "", "!($1)", "!($1)"], # Not
-    ["", "", "+($1)", "+($1)"], # UnaryPlusI
-    ["", "", "~($1)", "~($1)"], # BitnotI
-    ["", "", "+($1)", "+($1)"], # UnaryPlusI64
-    ["", "", "~($1)", "~($1)"], # BitnotI64
-    ["", "", "+($1)", "+($1)"], # UnaryPlusF64
-    ["", "", "-($1)", "-($1)"], # UnaryMinusF64
-    ["", "", "Math.abs($1)", "Math.abs($1)"], # AbsF64
-    ["Ze8ToI", "Ze8ToI", "Ze8ToI($1)", "Ze8ToI($1)"], # mZe8ToI
-    ["Ze8ToI64", "Ze8ToI64", "Ze8ToI64($1)", "Ze8ToI64($1)"], # mZe8ToI64
-    ["Ze16ToI", "Ze16ToI", "Ze16ToI($1)", "Ze16ToI($1)"], # mZe16ToI
-    ["Ze16ToI64", "Ze16ToI64", "Ze16ToI64($1)", "Ze16ToI64($1)"], # mZe16ToI64
-    ["Ze32ToI64", "Ze32ToI64", "Ze32ToI64($1)", "Ze32ToI64($1)"], # mZe32ToI64
-    ["ZeIToI64", "ZeIToI64", "ZeIToI64($1)", "ZeIToI64($1)"], # mZeIToI64
-    ["ToU8", "ToU8", "ToU8($1)", "ToU8($1)"], # ToU8
-    ["ToU16", "ToU16", "ToU16($1)", "ToU16($1)"], # ToU16
-    ["ToU32", "ToU32", "ToU32($1)", "ToU32($1)"], # ToU32
-    ["", "", "$1", "$1"],     # ToFloat
-    ["", "", "$1", "$1"],     # ToBiggestFloat
-    ["", "", "Math.floor($1)", "Math.floor($1)"], # ToInt
-    ["", "", "Math.floor($1)", "Math.floor($1)"], # ToBiggestInt
-    ["nimCharToStr", "nimCharToStr", "nimCharToStr($1)", "nimCharToStr($1)"],
-    ["nimBoolToStr", "nimBoolToStr", "nimBoolToStr($1)", "nimBoolToStr($1)"], [
-      "cstrToNimstr", "cstrToNimstr", "cstrToNimstr(($1)+\"\")",
-      "cstrToNimstr(($1)+\"\")"], ["cstrToNimstr", "cstrToNimstr",
-                                   "cstrToNimstr(($1)+\"\")",
-                                   "cstrToNimstr(($1)+\"\")"], ["cstrToNimstr",
-      "cstrToNimstr", "cstrToNimstr(($1)+\"\")", "cstrToNimstr(($1)+\"\")"],
-    ["cstrToNimstr", "cstrToNimstr", "cstrToNimstr($1)", "cstrToNimstr($1)"],
-    ["", "", "$1", "$1"]]
+proc registerJsOp(output: var TMagicOps,
+    name: TSupportedMagic, checkedOp: string=nil, checkedMagic: string=nil,
+    uncheckedOp: string=nil, uncheckedMagic: string=nil) =
+  # just because arguments are immutable:
+  var rUncheckedOp = uncheckedOp
+  var rUncheckedMagic = uncheckedMagic
+  var rCheckedOp = checkedOp
+  var rCheckedMagic = checkedMagic
 
+  if rUncheckedOp == nil:
+    rUncheckedOp = rCheckedOp
+    rUncheckedMagic = rCheckedMagic
+  if rCheckedMagic != nil:
+    rCheckedOp = rCheckedMagic & rCheckedOp
+  if uncheckedMagic != nil:
+    rUncheckedOp = rUncheckedMagic & rUncheckedOp
+
+  output[name] = TMagicFrmt([rCheckedMagic, rUncheckedMagic, rCheckedOp, rUncheckedOp])
+
+proc generateOps(): TMagicOps =
+  result.registerJsOp(mAddI, checkedOp="($1 + $2)", uncheckedOp="($1 + $2)")
+  result.registerJsOp(mSubI, checkedOp="($1 - $2)", uncheckedOp="($1 - $2)")
+  result.registerJsOp(mMulI, checkedOp="($1 * $2)", uncheckedOp="($1 * $2)")
+  result.registerJsOp(mDivI, checkedOp="Math.floor($1 / $2)", uncheckedOp="Math.floor($1 / $2)")
+  result.registerJsOp(mModI, checkedOp="Math.floor($1 % $2)", uncheckedOp="Math.floor($1 % $2)")
+  result.registerJsOp(mAddI64, checkedOp="($1 + $2)", uncheckedOp="($1 + $2)")
+  result.registerJsOp(mSubI64, checkedOp="($1 - $2)", uncheckedOp="($1 - $2)")
+  result.registerJsOp(mMulI64, checkedOp="($1 * $2)", uncheckedOp="($1 * $2)")
+  result.registerJsOp(mDivI64, checkedOp="Math.floor($1 / $2)", uncheckedOp="Math.floor($1 / $2)")
+  result.registerJsOp(mModI64, checkedOp="Math.floor($1 % $2)", uncheckedOp="Math.floor($1 % $2)")
+  result.registerJsOp(mAddF64, checkedOp="($1 + $2)")
+  result.registerJsOp(mSubF64, checkedOp="($1 - $2)")
+  result.registerJsOp(mMulF64, checkedOp="($1 * $2)")
+  result.registerJsOp(mDivF64, checkedOp="($1 / $2)")
+  result.registerJsOp(mShrI, checkedOp="($1 >>> $2)")
+  result.registerJsOp(mShlI, checkedOp="($1 << $2)")
+  result.registerJsOp(mBitandI, checkedOp="($1 & $2)")
+  result.registerJsOp(mBitorI, checkedOp="($1 | $2)")
+  result.registerJsOp(mBitxorI, checkedOp="($1 ^ $2)")
+  result.registerJsOp(mMinI, checkedMagic="nimMin", checkedOp="($1, $2)")
+  result.registerJsOp(mMaxI, checkedMagic="nimMax", checkedOp="($1, $2)")
+  result.registerJsOp(mShrI64, checkedOp="($1 >>> $2)")
+  result.registerJsOp(mShlI64, checkedOp="($1 << $2)")
+  result.registerJsOp(mBitandI64, checkedOp="($1 & $2)")
+  result.registerJsOp(mBitorI64, checkedOp="($1 | $2)")
+  result.registerJsOp(mBitxorI64, checkedOp="($1 ^ $2)")
+  result.registerJsOp(mMinI64, checkedMagic="nimMin", checkedOp="($1, $2)")
+  result.registerJsOp(mMaxI64, checkedMagic="nimMax", checkedOp="($1, $2)")
+  result.registerJsOp(mMinF64, checkedMagic="nimMin", checkedOp="($1, $2)")
+  result.registerJsOp(mMaxF64, checkedMagic="nimMax", checkedOp="($1, $2)")
+  result.registerJsOp(mAddU, checkedMagic="AddU", checkedOp="($1, $2)")
+  result.registerJsOp(mSubU, checkedMagic="SubU", checkedOp="($1, $2)")
+  result.registerJsOp(mMulU, checkedMagic="MulU", checkedOp="($1, $2)")
+  result.registerJsOp(mDivU, checkedMagic="DivU", checkedOp="($1, $2)")
+  result.registerJsOp(mModU, checkedMagic="ModU", checkedOp="($1, $2)")
+  result.registerJsOp(mEqI, checkedOp="($1 == $2)")
+  result.registerJsOp(mLeI, checkedOp="($1 <= $2)")
+  result.registerJsOp(mLtI, checkedOp="($1 < $2)")
+  result.registerJsOp(mEqI64, checkedOp="($1 == $2)")
+  result.registerJsOp(mLeI64, checkedOp="($1 <= $2)")
+  result.registerJsOp(mLtI64, checkedOp="($1 < $2)")
+  result.registerJsOp(mEqF64, checkedOp="($1 == $2)")
+  result.registerJsOp(mLeF64, checkedOp="($1 <= $2)")
+  result.registerJsOp(mLtF64, checkedOp="($1 < $2)")
+  result.registerJsOp(mLeU, checkedMagic="LeU", checkedOp="($1, $2)")
+  result.registerJsOp(mLtU, checkedMagic="LtU", checkedOp="($1, $2)")
+  result.registerJsOp(mLeU64, checkedMagic="LeU64", checkedOp="($1, $2)")
+  result.registerJsOp(mLtU64, checkedMagic="LtU64", checkedOp="($1, $2)")
+  result.registerJsOp(mEqEnum, checkedOp="($1 == $2)")
+  result.registerJsOp(mLeEnum, checkedOp="($1 <= $2)")
+  result.registerJsOp(mLtEnum, checkedOp="($1 < $2)")
+  result.registerJsOp(mEqCh, checkedOp="($1 == $2)")
+  result.registerJsOp(mLeCh, checkedOp="($1 <= $2)")
+  result.registerJsOp(mLtCh, checkedOp="($1 < $2)")
+  result.registerJsOp(mEqB, checkedOp="($1 == $2)")
+  result.registerJsOp(mLeB, checkedOp="($1 <= $2)")
+  result.registerJsOp(mLtB, checkedOp="($1 < $2)")
+  result.registerJsOp(mEqRef, checkedOp="($1 == $2)")
+  result.registerJsOp(mEqUntracedRef, checkedOp="($1 == $2)")
+  result.registerJsOp(mLePtr, checkedOp="($1 <= $2)")
+  result.registerJsOp(mLtPtr, checkedOp="($1 < $2)")
+  result.registerJsOp(mEqCString, checkedOp="($1 == $2)")
+  result.registerJsOp(mXor, checkedOp="($1 != $2)")
+  result.registerJsOp(mEqProc, checkedOp="($1 == $2)")
+  result.registerJsOp(mUnaryMinusI, checkedOp="-($1)", uncheckedOp="-($1)")
+  result.registerJsOp(mUnaryMinusI64, checkedOp="-($1)", uncheckedOp="-($1)")
+  result.registerJsOp(mAbsI, checkedOp="Math.abs($1)", uncheckedOp="Math.abs($1)")
+  result.registerJsOp(mAbsI64, checkedOp="Math.abs($1)", uncheckedOp="Math.abs($1)")
+  result.registerJsOp(mNot, checkedOp="!($1)")
+  result.registerJsOp(mUnaryPlusI, checkedOp="+($1)")
+  result.registerJsOp(mBitnotI, checkedOp="~($1)")
+  result.registerJsOp(mUnaryPlusI64, checkedOp="+($1)")
+  result.registerJsOp(mBitnotI64, checkedOp="~($1)")
+  result.registerJsOp(mUnaryPlusF64, checkedOp="+($1)")
+  result.registerJsOp(mUnaryMinusF64, checkedOp="-($1)")
+  result.registerJsOp(mAbsF64, checkedOp="Math.abs($1)")
+  result.registerJsOp(mZe8ToI, checkedMagic="Ze8ToI", checkedOp="($1)")
+  result.registerJsOp(mZe8ToI64, checkedMagic="Ze8ToI64", checkedOp="($1)")
+  result.registerJsOp(mZe16ToI, checkedMagic="Ze16ToI", checkedOp="($1)")
+  result.registerJsOp(mZe16ToI64, checkedMagic="Ze16ToI64", checkedOp="($1)")
+  result.registerJsOp(mZe32ToI64, checkedMagic="Ze32ToI64", checkedOp="($1)")
+  result.registerJsOp(mZeIToI64, checkedMagic="ZeIToI64", checkedOp="($1)")
+  result.registerJsOp(mToU8, checkedMagic="ToU8", checkedOp="($1)")
+  result.registerJsOp(mToU16, checkedMagic="ToU16", checkedOp="($1)")
+  result.registerJsOp(mToU32, checkedMagic="ToU32", checkedOp="($1)")
+  result.registerJsOp(mToFloat, checkedOp="$1")
+  result.registerJsOp(mToBiggestFloat, checkedOp="$1")
+  result.registerJsOp(mToInt, checkedOp="Math.floor($1)")
+  result.registerJsOp(mToBiggestInt, checkedOp="Math.floor($1)")
+  result.registerJsOp(mCharToStr, checkedMagic="nimCharToStr", checkedOp="($1)")
+  result.registerJsOp(mBoolToStr, checkedMagic="nimBoolToStr", checkedOp="($1)")
+  result.registerJsOp(mIntToStr, checkedMagic="cstrToNimstr", checkedOp="(($1)+\"\")")
+  result.registerJsOp(mInt64ToStr, checkedMagic="cstrToNimstr", checkedOp="(($1)+\"\")")
+  result.registerJsOp(mFloatToStr, checkedMagic="cstrToNimstr", checkedOp="(($1)+\"\")")
+  result.registerJsOp(mCStrToStr, checkedMagic="cstrToNimstr", checkedOp="($1)")
+  result.registerJsOp(mStrToStr, checkedOp="$1")
+
+var # magic checked op; magic unchecked op; checked op; unchecked op
+  jsOps: TMagicOps = generateOps()
 
 proc binaryExpr(p: PProc, n: PNode, r: var TCompRes, magic, frmt: string) =
   var x, y: TCompRes
