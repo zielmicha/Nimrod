@@ -12,8 +12,17 @@ myobj destroyed
 ----
 mygeneric3 constructed
 mygeneric1 destroyed
+----
+mygeneric1 destroyed
+----
+myobj destroyed
+----
+----
+myobj destroyed
 '''
 """
+
+{.experimental.}
 
 type
   TMyObj = object
@@ -31,15 +40,31 @@ type
     x: A
     y: B
     z: C
+  
+  TObjKind = enum A, B, C, D
 
-proc destruct(o: var TMyObj) {.destructor.} =
+  TCaseObj = object
+    case kind: TObjKind
+    of A:
+      x: TMyGeneric1[int]
+    of B, C:
+      y: TMyObj
+    else:
+      case innerKind: TObjKind
+      of A, B, C:
+        p: TMyGeneric3[int, float, string]
+      of D:
+        q: TMyGeneric3[TMyObj, int, int]
+      r: string
+
+proc destroy(o: var TMyObj) {.override.} =
   if o.p != nil: dealloc o.p
   echo "myobj destroyed"
 
-proc destroy(o: var TMyGeneric1) {.destructor.} =
+proc destroy(o: var TMyGeneric1) {.override.} =
   echo "mygeneric1 destroyed"
 
-proc destroy[A, B](o: var TMyGeneric2[A, B]) {.destructor.} =
+proc destroy[A, B](o: var TMyGeneric2[A, B]) {.override.} =
   echo "mygeneric2 destroyed"
 
 proc open: TMyObj =
@@ -57,13 +82,13 @@ proc mygeneric1() =
   echo "mygeneric1 constructed"
 
 proc mygeneric2[T](val: T) =
-  var
-    a = open()
-    b = TMyGeneric2[int, T](x: 10, y: val)
-    c = TMyGeneric3[int, int, string](x: 10, y: 20, z: "test")
-
+  var a = open()
+  
+  var b = TMyGeneric2[int, T](x: 10, y: val)
   echo "mygeneric2 constructed"
 
+  var c = TMyGeneric3[int, int, string](x: 10, y: 20, z: "test")
+  
 proc mygeneric3 =
   var x = TMyGeneric3[int, string, TMyGeneric1[int]](
     x: 10, y: "test", z: TMyGeneric1[int](x: 10))
@@ -81,4 +106,25 @@ mygeneric2[int](10)
 
 echo "----"
 mygeneric3()
+
+proc caseobj =
+  block:
+    echo "----"
+    var o1 = TCaseObj(kind: A, x: TMyGeneric1[int](x: 10))
+  
+  block:
+    echo "----"
+    var o2 = TCaseObj(kind: B, y: open())
+  
+  block:
+    echo "----"
+    var o3 = TCaseObj(kind: D, innerKind: B, r: "test",
+                      p: TMyGeneric3[int, float, string](x: 10, y: 1.0, z: "test"))
+
+  block:
+    echo "----"
+    var o4 = TCaseObj(kind: D, innerKind: D, r: "test",
+                      q: TMyGeneric3[TMyObj, int, int](x: open(), y: 1, z: 0))
+
+caseobj()
 

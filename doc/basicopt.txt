@@ -1,11 +1,12 @@
-Usage::
-  nimrod command [options] [projectfile] [arguments]
+::
+
+    nim command [options] [projectfile] [arguments]
 
 Command:
   //compile, c                compile project with default code generator (C)
   //doc                       generate the documentation for inputfile
   //doc2                      generate the documentation for the whole project
-  //i                         start Nimrod in interactive mode (limited)
+  //i                         start Nim in interactive mode (limited)
 
 Arguments:
   arguments are passed to the program being run (if --run option is selected)
@@ -13,6 +14,7 @@ Options:
   -p, --path:PATH           add path to search paths
   -d, --define:SYMBOL       define a conditional symbol
   -u, --undef:SYMBOL        undefine a conditional symbol
+  --symbol:SYMBOL           declare a conditional symbol
   -f, --forceBuild          force rebuilding of all modules
   --stackTrace:on|off       turn stack tracing on|off
   --lineTrace:on|off        turn line tracing on|off
@@ -34,3 +36,5 @@ Options:
   -r, --run                 run the compiled program with given arguments
   --advanced                show advanced command line switches
   -h, --help                show this help
+
+Note, single letter options that take an argument require a colon. E.g. -p:PATH.

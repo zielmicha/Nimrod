@@ -1,6 +1,6 @@
 #
 #
-#           The Nimrod Compiler
+#           The Nim Compiler
 #        (c) Copyright 2013 Andreas Rumpf
 #
 #    See the file "copying.txt", included in this
@@ -8,13 +8,16 @@
 #
 
 ## This module contains the type definitions for the new evaluation engine.
-## An instruction is 1-2 int32s in memory, it is a register based VM.
+## An instruction is 1-3 int32s in memory, it is a register based VM.
 
 import ast, passes, msgs, intsets
 
 const
   byteExcess* = 128 # we use excess-K for immediates
   wordExcess* = 32768
+
+  MaxLoopIterations* = 500_000 # max iterations of all loops
+
 
 type
   TRegister* = range[0..255]
@@ -32,17 +35,17 @@ type
     opcAsgnFloat,
     opcAsgnRef,
     opcAsgnComplex,
+    opcRegToNode,
+    opcNodeToReg,
 
     opcLdArr,  # a = b[c]
-    opcLdArrRef,
     opcWrArr,  # a[b] = c
-    opcWrArrRef,
     opcLdObj,  # a = b.c
-    opcLdObjRef,
     opcWrObj,  # a.b = c
-    opcWrObjRef,
-    opcAddr,
-    opcDeref,
+    opcAddrReg,
+    opcAddrNode,
+    opcLdDeref,
+    opcWrDeref,
     opcWrStrIdx,
     opcLdStrIdx, # a = b[c]
     
@@ -63,7 +66,8 @@ type
     opcMulSet, opcPlusSet, opcMinusSet, opcSymdiffSet, opcConcatStr,
     opcContainsSet, opcRepr, opcSetLenStr, opcSetLenSeq,
     opcSwap, opcIsNil, opcOf, opcIs,
-    opcSubStr, opcConv, opcCast, opcQuit, opcReset,
+    opcSubStr, opcParseFloat, opcConv, opcCast, opcQuit, opcReset,
+    opcNarrowS, opcNarrowU,
     
     opcAddStrCh,
     opcAddStrStr,
@@ -88,6 +92,7 @@ type
     opcGorge,
     opcParseExprToAst,
     opcParseStmtToAst,
+    opcQueryErrorFlag,
     opcNError,
     opcNWarning,
     opcNHint,
@@ -109,6 +114,7 @@ type
     opcTJmp,  # jump Bx if A != 0
     opcFJmp,  # jump Bx if A == 0
     opcJmp,   # jump Bx
+    opcJmpBack, # jump Bx; resulting from a while loop
     opcBranch,  # branch for 'case'
     opcTry,
     opcExcept,
@@ -117,15 +123,14 @@ type
     opcNew,
     opcNewSeq,
     opcLdNull,    # dest = nullvalue(types[Bx])
+    opcLdNullReg,
     opcLdConst,   # dest = constants[Bx]
     opcAsgnConst, # dest = copy(constants[Bx])
     opcLdGlobal,  # dest = globals[Bx]
+    opcLdGlobalAddr, # dest = addr(globals[Bx])
+
     opcLdImmInt,  # dest = immediate value
     opcNBindSym,
-    opcWrGlobal,
-    opcWrGlobalRef,
-    opcGlobalAlias, # load an alias to a global into a register
-    opcGlobalOnce,  # used to introduce an assignment to a global once
     opcSetType,   # dest.typ = types[Bx]
     opcTypeTrait
 
@@ -159,15 +164,21 @@ type
     slotTempInt,      # some temporary int
     slotTempFloat,    # some temporary float
     slotTempStr,      # some temporary string
-    slotTempComplex   # some complex temporary (n.sons field is used)
+    slotTempComplex,  # some complex temporary (s.node field is used)
+    slotTempPerm      # slot is temporary but permanent (hack)
 
   PProc* = ref object
     blocks*: seq[TBlock]    # blocks; temp data structure
+    sym*: PSym
     slots*: array[TRegister, tuple[inUse: bool, kind: TSlotKind]]
     maxSlots*: int
-    globals*: array[TRegister, int] # hack: to support passing globals byref
-                                    # we map a slot persistently to a global
-    
+
+  VmArgs* = object
+    ra*, rb*, rc*: Natural
+    slots*: pointer
+    currentException*: PNode
+  VmCallback* = proc (args: VmArgs) {.closure.}
+  
   PCtx* = ref TCtx
   TCtx* = object of passes.TPassContext # code gen context
     code*: seq[TInstr]
@@ -183,6 +194,11 @@ type
     callsite*: PNode
     mode*: TEvalMode
     features*: TSandboxFlags
+    traceActive*: bool
+    loopIterations*: int
+    comesFromHeuristic*: TLineInfo # Heuristic for better macro stack traces
+    callbacks*: seq[tuple[key: string, value: VmCallback]]
+    errorFlag*: string
 
   TPosition* = distinct int
 
@@ -191,18 +207,22 @@ type
 proc newCtx*(module: PSym): PCtx =
   PCtx(code: @[], debug: @[],
     globals: newNode(nkStmtListExpr), constants: newNode(nkStmtList), types: @[],
-    prc: PProc(blocks: @[]), module: module)
+    prc: PProc(blocks: @[]), module: module, loopIterations: MaxLoopIterations,
+    comesFromHeuristic: unknownLineInfo(), callbacks: @[], errorFlag: "")
 
 proc refresh*(c: PCtx, module: PSym) =
   c.module = module
   c.prc = PProc(blocks: @[])
+
+proc registerCallback*(c: PCtx; name: string; callback: VmCallback) =
+  c.callbacks.add((name, callback))
 
 const
   firstABxInstr* = opcTJmp
   largeInstrs* = { # instructions which use 2 int32s instead of 1:
     opcSubStr, opcConv, opcCast, opcNewSeq, opcOf}
   slotSomeTemp* = slotTempUnknown
-  relativeJumps* = {opcTJmp, opcFJmp, opcJmp}
+  relativeJumps* = {opcTJmp, opcFJmp, opcJmp, opcJmpBack}
 
 template opcode*(x: TInstr): TOpcode {.immediate.} = TOpcode(x.uint32 and 0xff'u32)
 template regA*(x: TInstr): TRegister {.immediate.} = TRegister(x.uint32 shr 8'u32 and 0xff'u32)

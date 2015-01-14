@@ -1,6 +1,6 @@
 #
 #
-#            Nimrod's Runtime Library
+#            Nim's Runtime Library
 #        (c) Copyright 2012 Andreas Rumpf
 #
 #    See the file "copying.txt", included in this
@@ -10,19 +10,19 @@
 # The generic ``repr`` procedure. It is an invaluable debugging tool.
 
 when not defined(useNimRtl):
-  proc reprAny(p: pointer, typ: PNimType): string {.compilerRtl.}
+  proc reprAny(p: pointer, typ: PNimType): string {.compilerRtl, gcsafe.}
 
 proc reprInt(x: int64): string {.compilerproc.} = return $x
 proc reprFloat(x: float): string {.compilerproc.} = return $x
 
 proc reprPointer(x: pointer): string {.compilerproc.} =
   var buf: array [0..59, char]
-  c_sprintf(buf, "%p", x)
+  discard c_sprintf(buf, "%p", x)
   return $buf
 
 proc `$`(x: uint64): string =
   var buf: array [0..59, char]
-  c_sprintf(buf, "%llu", x)
+  discard c_sprintf(buf, "%llu", x)
   return $buf
 
 proc reprStrAux(result: var string, s: string) =
@@ -59,7 +59,11 @@ proc reprChar(x: char): string {.compilerRtl.} =
 
 proc reprEnum(e: int, typ: PNimType): string {.compilerRtl.} =
   # we read an 'int' but this may have been too large, so mask the other bits:
-  let e = e and (1 shl (typ.size*8)-1)
+  let e = if typ.size == 1: e and 0xff
+          elif typ.size == 2: e and 0xffff
+          else: e
+  # XXX we need a proper narrowing based on signedness here
+  #e and ((1 shl (typ.size*8)) - 1)
   if ntfEnumHole notin typ.flags:
     if e <% typ.node.len:
       return $typ.node.sons[e].name
@@ -74,7 +78,7 @@ proc reprEnum(e: int, typ: PNimType): string {.compilerRtl.} =
 type
   PByteArray = ptr array[0.. 0xffff, int8]
 
-proc addSetElem(result: var string, elem: int, typ: PNimType) =
+proc addSetElem(result: var string, elem: int, typ: PNimType) {.gcsafe.} =
   case typ.kind
   of tyEnum: add result, reprEnum(elem, typ)
   of tyBool: add result, reprBool(bool(elem))
@@ -117,7 +121,7 @@ proc reprSet(p: pointer, typ: PNimType): string {.compilerRtl.} =
 type
   TReprClosure {.final.} = object # we cannot use a global variable here
                                   # as this wouldn't be thread-safe
-    when defined(TCellSet):
+    when declared(TCellSet):
       marked: TCellSet
     recdepth: int       # do not recurse endlessly
     indent: int         # indentation
@@ -126,16 +130,16 @@ when not defined(useNimRtl):
   proc initReprClosure(cl: var TReprClosure) =
     # Important: cellsets does not lock the heap when doing allocations! We
     # have to do it here ...
-    when hasThreadSupport and hasSharedHeap and defined(heapLock):
+    when hasThreadSupport and hasSharedHeap and declared(heapLock):
       AcquireSys(HeapLock)
-    when defined(TCellSet):
+    when declared(TCellSet):
       init(cl.marked)
     cl.recdepth = -1      # default is to display everything!
     cl.indent = 0
 
   proc deinitReprClosure(cl: var TReprClosure) =
-    when defined(TCellSet): deinit(cl.marked)
-    when hasThreadSupport and hasSharedHeap and defined(heapLock): 
+    when declared(TCellSet): deinit(cl.marked)
+    when hasThreadSupport and hasSharedHeap and declared(heapLock): 
       ReleaseSys(HeapLock)
 
   proc reprBreak(result: var string, cl: TReprClosure) =
@@ -143,7 +147,7 @@ when not defined(useNimRtl):
     for i in 0..cl.indent-1: add result, ' '
 
   proc reprAux(result: var string, p: pointer, typ: PNimType,
-               cl: var TReprClosure)
+               cl: var TReprClosure) {.gcsafe.}
 
   proc reprArray(result: var string, p: pointer, typ: PNimType,
                  cl: var TReprClosure) =
@@ -151,7 +155,7 @@ when not defined(useNimRtl):
     var bs = typ.base.size
     for i in 0..typ.size div bs - 1:
       if i > 0: add result, ", "
-      reprAux(result, cast[pointer](cast[TAddress](p) + i*bs), typ.base, cl)
+      reprAux(result, cast[pointer](cast[ByteAddress](p) + i*bs), typ.base, cl)
     add result, "]"
 
   proc reprSequence(result: var string, p: pointer, typ: PNimType,
@@ -163,25 +167,25 @@ when not defined(useNimRtl):
     var bs = typ.base.size
     for i in 0..cast[PGenericSeq](p).len-1:
       if i > 0: add result, ", "
-      reprAux(result, cast[pointer](cast[TAddress](p) + GenericSeqSize + i*bs),
+      reprAux(result, cast[pointer](cast[ByteAddress](p) + GenericSeqSize + i*bs),
               typ.base, cl)
     add result, "]"
 
   proc reprRecordAux(result: var string, p: pointer, n: ptr TNimNode,
-                     cl: var TReprClosure) =
+                     cl: var TReprClosure) {.gcsafe.} =
     case n.kind
     of nkNone: sysAssert(false, "reprRecordAux")
     of nkSlot:
       add result, $n.name
       add result, " = "
-      reprAux(result, cast[pointer](cast[TAddress](p) + n.offset), n.typ, cl)
+      reprAux(result, cast[pointer](cast[ByteAddress](p) + n.offset), n.typ, cl)
     of nkList:
       for i in 0..n.len-1:
         if i > 0: add result, ",\n"
         reprRecordAux(result, p, n.sons[i], cl)
     of nkCase:
       var m = selectBranch(p, n)
-      reprAux(result, cast[pointer](cast[TAddress](p) + n.offset), n.typ, cl)
+      reprAux(result, cast[pointer](cast[ByteAddress](p) + n.offset), n.typ, cl)
       if m != nil: reprRecordAux(result, p, m, cl)
 
   proc reprRecord(result: var string, p: pointer, typ: PNimType,
@@ -197,7 +201,7 @@ when not defined(useNimRtl):
   proc reprRef(result: var string, p: pointer, typ: PNimType,
                cl: var TReprClosure) =
     # we know that p is not nil here:
-    when defined(TCellSet):
+    when declared(TCellSet):
       when defined(boehmGC) or defined(nogc):
         var cell = cast[PCell](p)
       else:
@@ -217,7 +221,7 @@ when not defined(useNimRtl):
     dec(cl.recdepth)
     case typ.kind
     of tySet: reprSetAux(result, p, typ)
-    of tyArray: reprArray(result, p, typ, cl)
+    of tyArray, tyArrayConstr: reprArray(result, p, typ, cl)
     of tyTuple: reprRecord(result, p, typ, cl)
     of tyObject: 
       var t = cast[ptr PNimType](p)[]
@@ -261,7 +265,7 @@ proc reprOpenArray(p: pointer, length: int, elemtyp: PNimType): string {.
   var bs = elemtyp.size
   for i in 0..length - 1:
     if i > 0: add result, ", "
-    reprAux(result, cast[pointer](cast[TAddress](p) + i*bs), elemtyp, cl)
+    reprAux(result, cast[pointer](cast[ByteAddress](p) + i*bs), elemtyp, cl)
   add result, "]"
   deinitReprClosure(cl)
 
@@ -271,7 +275,7 @@ when not defined(useNimRtl):
       cl: TReprClosure
     initReprClosure(cl)
     result = ""
-    if typ.kind in {tyObject, tyTuple, tyArray, tySet}:
+    if typ.kind in {tyObject, tyTuple, tyArray, tyArrayConstr, tySet}:
       reprAux(result, p, typ, cl)
     else:
       var p = p

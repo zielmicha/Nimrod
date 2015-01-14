@@ -1,13 +1,13 @@
 #
 #
-#            Nimrod's Runtime Library
+#            Nim's Runtime Library
 #        (c) Copyright 2012 Andreas Rumpf
 #
 #    See the file "copying.txt", included in this
 #    distribution, for details about the copyright.
 #
 
-when defined(NimString): 
+when declared(NimString): 
   # we are in system module:
   {.pragma: codegenType, compilerproc.}
 else:
@@ -85,7 +85,8 @@ type
     base: ptr TNimType
     node: ptr TNimNode # valid for tyRecord, tyObject, tyTuple, tyEnum
     finalizer: pointer # the finalizer for the type
-    marker: proc (p: pointer, op: int) {.nimcall.} # marker proc for GC
+    marker: proc (p: pointer, op: int) {.nimcall, benign.} # marker proc for GC
+    deepcopy: proc (p: pointer): pointer {.nimcall, benign.}
   PNimType = ptr TNimType
   
 # node.len may be the ``first`` element of a set

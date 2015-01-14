@@ -1,6 +1,6 @@
 #
 #
-#           The Nimrod Compiler
+#           The Nim Compiler
 #        (c) Copyright 2012 Andreas Rumpf
 #
 #    See the file "copying.txt", included in this
@@ -83,7 +83,7 @@ proc writeTypeCache(a: TIdTable, s: var string) =
     inc i
   s.add('}')
 
-proc writeIntSet(a: TIntSet, s: var string) =
+proc writeIntSet(a: IntSet, s: var string) =
   var i = 0
   for x in items(a):
     if i == 10:
@@ -145,33 +145,6 @@ proc atEndMark(buf: cstring, pos: int): bool =
   while s < NimMergeEndMark.len and buf[pos+s] == NimMergeEndMark[s]: inc s
   result = s == NimMergeEndMark.len
 
-when false:
-  proc readVerbatimSection(L: var TBaseLexer): PRope = 
-    var pos = L.bufpos
-    var buf = L.buf
-    result = newMutableRope(30_000)
-    while true:
-      case buf[pos]
-      of CR:
-        pos = nimlexbase.HandleCR(L, pos)
-        buf = L.buf
-        result.data.add(tnl)
-      of LF:
-        pos = nimlexbase.HandleLF(L, pos)
-        buf = L.buf
-        result.data.add(tnl)
-      of '\0':
-        InternalError("ccgmerge: expected: " & NimMergeEndMark)
-        break
-      else: 
-        if atEndMark(buf, pos):
-          inc pos, NimMergeEndMark.len
-          break
-        result.data.add(buf[pos])
-        inc pos
-    L.bufpos = pos
-    freezeMutableRope(result)
-
 proc readVerbatimSection(L: var TBaseLexer): PRope = 
   var pos = L.bufpos
   var buf = L.buf
@@ -227,7 +200,7 @@ proc readTypeCache(L: var TBaseLexer, result: var TIdTable) =
     idTablePut(result, newFakeType(key), value.toRope)
   inc L.bufpos
 
-proc readIntSet(L: var TBaseLexer, result: var TIntSet) =
+proc readIntSet(L: var TBaseLexer, result: var IntSet) =
   if ^L.bufpos != '{': internalError("ccgmerge: '{' expected")
   inc L.bufpos
   while ^L.bufpos != '}':
@@ -276,7 +249,7 @@ proc readMergeInfo*(cfilename: string, m: BModule) =
       break
 
 type
-  TMergeSections = object {.pure.}
+  TMergeSections = object
     f: TCFileSections
     p: TCProcSections
 

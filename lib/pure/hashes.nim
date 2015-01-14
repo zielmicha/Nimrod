@@ -1,6 +1,6 @@
 #
 #
-#            Nimrod's Runtime Library
+#            Nim's Runtime Library
 #        (c) Copyright 2012 Andreas Rumpf
 #
 #    See the file "copying.txt", included in this
@@ -8,7 +8,34 @@
 #
 
 ## This module implements efficient computations of hash values for diverse
-## Nimrod types.
+## Nim types. All the procs are based on these two building blocks: the `!&
+## proc <#!&>`_ used to start or mix a hash value, and the `!$ proc <#!$>`_
+## used to *finish* the hash value.  If you want to implement hash procs for
+## your custom types you will end up writing the following kind of skeleton of
+## code:
+##
+## .. code-block:: Nim
+##  proc hash(x: Something): THash =
+##    ## Computes a THash from `x`.
+##    var h: THash = 0
+##    # Iterate over parts of `x`.
+##    for xAtom in x:
+##      # Mix the atom with the partial hash.
+##      h = h !& xAtom
+##    # Finish the hash.
+##    result = !$h
+##
+## If your custom types contain fields for which there already is a hash proc,
+## like for example objects made up of ``strings``, you can simply hash
+## together the hash value of the individual fields:
+##
+## .. code-block:: Nim
+##  proc hash(x: Something): THash =
+##    ## Computes a THash from `x`.
+##    var h: THash = 0
+##    h = h &! hash(x.foo)
+##    h = h &! hash(x.bar)
+##    result = !$h
 
 import 
   strutils
@@ -127,5 +154,9 @@ proc hash*(x: float): THash {.inline.} =
   result = cast[ptr THash](addr(y))[]
 
 proc hash*[A](x: openArray[A]): THash =
+  for it in items(x): result = result !& hash(it)
+  result = !$result
+
+proc hash*[A](x: set[A]): THash =
   for it in items(x): result = result !& hash(it)
   result = !$result

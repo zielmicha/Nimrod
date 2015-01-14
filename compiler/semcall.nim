@@ -1,6 +1,6 @@
 #
 #
-#           The Nimrod Compiler
+#           The Nim Compiler
 #        (c) Copyright 2013 Andreas Rumpf
 #
 #    See the file "copying.txt", included in this
@@ -39,7 +39,7 @@ proc pickBestCandidate(c: PContext, headSymbol: PNode,
                        initialBinding: PNode,
                        filter: TSymKinds,
                        best, alt: var TCandidate,
-                       errors: var seq[string]) =
+                       errors: var CandidateErrors) =
   var o: TOverloadIter
   var sym = initOverloadIter(o, c, headSymbol)
   var symScope = o.lastOverloadScope
@@ -58,13 +58,13 @@ proc pickBestCandidate(c: PContext, headSymbol: PNode,
       z.calleeSym = sym
       matches(c, n, orig, z)
       if errors != nil:
-        errors.safeAdd(getProcHeader(sym))
+        errors.safeAdd(sym)
         if z.errors != nil:
           for err in z.errors:
-            errors[errors.len - 1].add("\n  " & err)
+            errors.add(err)
       if z.state == csMatch:
         # little hack so that iterators are preferred over everything else:
-        if sym.kind == skIterator: inc(z.exactMatches, 200)
+        if sym.kind in skIterators: inc(z.exactMatches, 200)
         case best.state
         of csEmpty, csNoMatch: best = z
         of csMatch:
@@ -72,27 +72,52 @@ proc pickBestCandidate(c: PContext, headSymbol: PNode,
           if cmp < 0: best = z   # x is better than the best so far
           elif cmp == 0: alt = z # x is as good as the best so far
           else: discard
+        #if sym.name.s == "shl" and (n.info ?? "net.nim"):
+        #  echo "Matches ", n.info, " ", typeToString(sym.typ)
+        #  writeMatches(z)
     sym = nextOverloadIter(o, c, headSymbol)
 
-proc notFoundError*(c: PContext, n: PNode, errors: seq[string]) =
+proc notFoundError*(c: PContext, n: PNode, errors: CandidateErrors) =
   # Gives a detailed error message; this is separated from semOverloadedCall,
   # as semOverlodedCall is already pretty slow (and we need this information
   # only in case of an error).
   if c.inCompilesContext > 0: 
     # fail fast:
     globalError(n.info, errTypeMismatch, "")
-  var result = msgKindToString(errTypeMismatch)
-  add(result, describeArgs(c, n, 1 + ord(nfDelegate in n.flags)))
-  add(result, ')')
+  if errors.len == 0:
+    localError(n.info, errExprXCannotBeCalled, n[0].renderTree)
+
+  # to avoid confusing errors like: 
+  #   got (SslPtr, SocketHandle)
+  #   but expected one of: 
+  #   openssl.SSL_set_fd(ssl: SslPtr, fd: SocketHandle): cint
+  # we do a pre-analysis. If all types produce the same string, we will add
+  # module information.
+  let proto = describeArgs(c, n, 1, preferName)
   
+  var prefer = preferName
+  for err in errors:
+    var errProto = ""
+    let n = err.typ.n
+    for i in countup(1, n.len - 1): 
+      var p = n.sons[i]
+      if p.kind == nkSym:
+        add(errProto, typeToString(p.sym.typ, preferName))
+        if i != n.len-1: add(errProto, ", ")
+      # else: ignore internal error as we're already in error handling mode
+    if errProto == proto:
+      prefer = preferModuleInfo
+      break
+  # now use the information stored in 'prefer' to produce a nice error message:
+  var result = msgKindToString(errTypeMismatch)
+  add(result, describeArgs(c, n, 1, prefer))
+  add(result, ')')
   var candidates = ""
   for err in errors:
-    add(candidates, err)
+    add(candidates, err.getProcHeader(prefer))
     add(candidates, "\n")
-
   if candidates != "":
     add(result, "\n" & msgKindToString(errButExpected) & "\n" & candidates)
-
   localError(n.info, errGenerated, result)
 
 proc gatherUsedSyms(c: PContext, usedSyms: var seq[PNode]) =
@@ -112,9 +137,9 @@ proc resolveOverloads(c: PContext, n, orig: PNode,
   else:
     initialBinding = nil
 
-  var errors: seq[string]
+  var errors: CandidateErrors
   var usedSyms: seq[PNode]
- 
+
   template pickBest(headSymbol: expr) =
     pickBestCandidate(c, headSymbol, n, orig, initialBinding,
                       filter, result, alt, errors)
@@ -138,28 +163,52 @@ proc resolveOverloads(c: PContext, n, orig: PNode,
 
   let overloadsState = result.state
   if overloadsState != csMatch:
-    if nfDelegate in n.flags:
-      internalAssert f.kind == nkIdent
-      let calleeName = newStrNode(nkStrLit, f.ident.s)
-      calleeName.info = n.info
+    if nfDotField in n.flags:
+      internalAssert f.kind == nkIdent and n.sonsLen >= 2
+      let calleeName = newStrNode(nkStrLit, f.ident.s).withInfo(n.info)
 
-      let callOp = newIdentNode(idDelegator, n.info)
-      n.sons[0..0] = [callOp, calleeName]
-      orig.sons[0..0] = [callOp, calleeName]
-     
+      # leave the op head symbol empty,
+      # we are going to try multiple variants
+      n.sons[0..1] = [nil, n[1], calleeName]
+      orig.sons[0..1] = [nil, orig[1], calleeName]
+      
+      template tryOp(x) =
+        let op = newIdentNode(getIdent(x), n.info)
+        n.sons[0] = op
+        orig.sons[0] = op
+        pickBest(op)
+
+      if nfExplicitCall in n.flags:
+        tryOp ".()"
+   
+      if result.state in {csEmpty, csNoMatch}:
+        tryOp "."
+
+    elif nfDotSetter in n.flags:
+      internalAssert f.kind == nkIdent and n.sonsLen == 3
+      let calleeName = newStrNode(nkStrLit, f.ident.s[0.. -2]).withInfo(n.info)
+      let callOp = newIdentNode(getIdent".=", n.info)
+      n.sons[0..1] = [callOp, n[1], calleeName]
+      orig.sons[0..1] = [callOp, orig[1], calleeName]
       pickBest(callOp)
-
+   
     if overloadsState == csEmpty and result.state == csEmpty:
-      localError(n.info, errUndeclaredIdentifier, considerAcc(f).s)
+      localError(n.info, errUndeclaredIdentifier, considerQuotedIdent(f).s)
       return
     elif result.state != csMatch:
       if nfExprCall in n.flags:
         localError(n.info, errExprXCannotBeCalled,
                    renderTree(n, {renderNoComments}))
       else:
+        if {nfDotField, nfDotSetter} * n.flags != {}:
+          # clean up the inserted ops
+          n.sons.delete(2)
+          n.sons[0] = f
+
         errors = @[]
         pickBest(f)
         notFoundError(c, n, errors)
+
       return
 
   if alt.state == csMatch and cmpCandidates(result, alt) == 0 and
@@ -204,29 +253,41 @@ proc indexTypesMatch(c: PContext, f, a: PType, arg: PNode): PNode =
   if m.genericConverter and result != nil:
     instGenericConvertersArg(c, result, m)
 
-proc convertTo*(c: PContext, f: PType, n: PNode): PNode = 
+proc inferWithMetatype(c: PContext, formal: PType,
+                       arg: PNode, coerceDistincts = false): PNode =
   var m: TCandidate
-  initCandidate(c, m, f)
-  result = paramTypesMatch(m, f, n.typ, n, nil)
+  initCandidate(c, m, formal)
+  m.coerceDistincts = coerceDistincts
+  result = paramTypesMatch(m, formal, arg.typ, arg, nil)
   if m.genericConverter and result != nil:
     instGenericConvertersArg(c, result, m)
+  if result != nil:
+    # This almost exactly replicates the steps taken by the compiler during
+    # param matching. It performs an embarassing ammount of back-and-forth
+    # type jugling, but it's the price to pay for consistency and correctness
+    result.typ = generateTypeInstance(c, m.bindings, arg.info,
+                                      formal.skipTypes({tyCompositeTypeClass}))
+  else:
+    typeMismatch(arg, formal, arg.typ)
+    # error correction:
+    result = copyTree(arg)
+    result.typ = formal
 
 proc semResolvedCall(c: PContext, n: PNode, x: TCandidate): PNode =
   assert x.state == csMatch
   var finalCallee = x.calleeSym
-  markUsed(n.sons[0], finalCallee)
+  markUsed(n.sons[0].info, finalCallee)
+  styleCheckUse(n.sons[0].info, finalCallee)
   if finalCallee.ast == nil:
     internalError(n.info, "calleeSym.ast is nil") # XXX: remove this check!
+  if x.hasFauxMatch:
+    result = x.call
+    result.sons[0] = newSymNode(finalCallee, result.sons[0].info)
+    if containsGenericType(result.typ) or x.fauxMatch == tyUnknown:
+      result.typ = newTypeS(x.fauxMatch, c)
+    return
   if finalCallee.ast.sons[genericParamsPos].kind != nkEmpty:
-    # a generic proc!
-    if not x.proxyMatch:
-      finalCallee = generateInstance(c, x.calleeSym, x.bindings, n.info)
-    else:
-      result = x.call
-      result.sons[0] = newSymNode(finalCallee, result.sons[0].info)
-      result.typ = finalCallee.typ.sons[0]
-      if containsGenericType(result.typ): result.typ = errorType(c)
-      return
+    finalCallee = generateInstance(c, x.calleeSym, x.bindings, n.info)
   result = x.call
   instGenericConvertersSons(c, result, x)
   result.sons[0] = newSymNode(finalCallee, result.sons[0].info)
@@ -246,7 +307,8 @@ proc explicitGenericSym(c: PContext, n: PNode, s: PSym): PNode =
   var m: TCandidate
   initCandidate(c, m, s, n)
   var newInst = generateInstance(c, s, m.bindings, n.info)
-  markUsed(n, s)
+  markUsed(n.info, s)
+  styleCheckUse(n.info, s)
   result = newSymNode(newInst, n.info)
 
 proc explicitGenericInstantiation(c: PContext, n: PNode, s: PSym): PNode = 
@@ -266,13 +328,14 @@ proc explicitGenericInstantiation(c: PContext, n: PNode, s: PSym): PNode =
     result = explicitGenericSym(c, n, s)
   elif a.kind in {nkClosedSymChoice, nkOpenSymChoice}:
     # choose the generic proc with the proper number of type parameters.
-    # XXX I think this could be improved by reusing sigmatch.ParamTypesMatch.
+    # XXX I think this could be improved by reusing sigmatch.paramTypesMatch.
     # It's good enough for now.
     result = newNodeI(a.kind, n.info)
     for i in countup(0, len(a)-1): 
       var candidate = a.sons[i].sym
-      if candidate.kind in {skProc, skMethod, skConverter, skIterator}: 
-        # if suffices that the candidate has the proper number of generic 
+      if candidate.kind in {skProc, skMethod, skConverter,
+                            skIterator, skClosureIterator}:
+        # it suffices that the candidate has the proper number of generic 
         # type parameters:
         if safeLen(candidate.ast.sons[genericParamsPos]) == n.len-1:
           result.add(explicitGenericSym(c, n, candidate))
@@ -288,7 +351,7 @@ proc searchForBorrowProc(c: PContext, startScope: PScope, fn: PSym): PSym =
   # for borrowing the sym in the symbol table is returned, else nil.
   # New approach: generate fn(x, y, z) where x, y, z have the proper types
   # and use the overloading resolution mechanism:
-  var call = newNode(nkCall)
+  var call = newNodeI(nkCall, fn.info)
   var hasDistinct = false
   call.add(newIdentNode(fn.name, fn.info))
   for i in 1.. <fn.typ.n.len:

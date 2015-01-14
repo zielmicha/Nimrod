@@ -1,8 +1,8 @@
 discard """
   file: "tthreadanalysis2.nim"
-  line: 42
-  errormsg: "write to foreign heap"
-  cmd: "nimrod cc --hints:on --threads:on $# $#"
+  line: 37
+  errormsg: "'threadFunc' is not GC-safe"
+  cmd: "nim $target --hints:on --threads:on $options $file"
 """
 
 import os
@@ -10,7 +10,7 @@ import os
 var
   thr: array [0..5, TThread[tuple[a, b: int]]]
 
-proc doNothing() = nil
+proc doNothing() = discard
 
 type
   PNode = ref TNode

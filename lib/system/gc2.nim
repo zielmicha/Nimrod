@@ -1,6 +1,6 @@
 #
 #
-#            Nimrod's Runtime Library
+#            Nim's Runtime Library
 #        (c) Copyright 2012 Andreas Rumpf
 #
 #    See the file "copying.txt", included in this
@@ -26,7 +26,7 @@ const
                       # this seems to be a good value
   withRealTime = defined(useRealtimeGC)
 
-when withRealTime and not defined(getTicks):
+when withRealTime and not declared(getTicks):
   include "system/timers"
 when defined(memProfiler):
   proc nimProfile(requestedSize: int)
@@ -1344,7 +1344,7 @@ when not defined(useNimRtl):
       else:
         dec(gch.recGcLock)
 
-  proc GC_setStrategy(strategy: TGC_Strategy) =
+  proc GC_setStrategy(strategy: GC_Strategy) =
     case strategy
     of gcThroughput: nil
     of gcResponsiveness: nil

@@ -1,16 +1,16 @@
 #
 #
-#            Nimrod's Runtime Library
+#            Nim's Runtime Library
 #        (c) Copyright 2012 Andreas Rumpf
 #
 #    See the file "copying.txt", included in this
 #    distribution, for details about the copyright.
 #
 
-## Nimrod support for C/C++'s `wide strings`:idx:. This is part of the system
-## module! Do not import it directly!
+# Nim support for C/C++'s `wide strings`:idx:. This is part of the system
+# module! Do not import it directly!
 
-when not defined(NimString):
+when not declared(NimString):
   {.error: "You must not import this module explicitly".}
 
 type
@@ -103,7 +103,7 @@ proc newWideCString*(source: cstring, L: int): WideCString =
 proc newWideCString*(s: cstring): WideCString =
   if s.isNil: return nil
 
-  when not defined(c_strlen):
+  when not declared(c_strlen):
     proc c_strlen(a: cstring): int {.
       header: "<string.h>", noSideEffect, importc: "strlen".}
 

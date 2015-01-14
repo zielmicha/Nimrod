@@ -1,7 +1,7 @@
 #
 #
-#           The Nimrod Compiler
-#        (c) Copyright 2012 Andreas Rumpf
+#           The Nim Compiler
+#        (c) Copyright 2015 Andreas Rumpf
 #
 #    See the file "copying.txt", included in this
 #    distribution, for details about the copyright.
@@ -113,12 +113,18 @@ proc pickMaxInt(n: PNode): BiggestInt =
     internalError(n.info, "pickMaxInt")
 
 proc makeRange(typ: PType, first, last: BiggestInt): PType = 
-  var n = newNode(nkRange)
-  addSon(n, newIntNode(nkIntLit, min(first, last)))
-  addSon(n, newIntNode(nkIntLit, max(first, last)))
-  result = newType(tyRange, typ.owner)
-  result.n = n
-  addSonSkipIntLit(result, skipTypes(typ, {tyRange}))
+  let minA = min(first, last)
+  let maxA = max(first, last)
+  let lowerNode = newIntNode(nkIntLit, minA)
+  if typ.kind == tyInt and minA == maxA:
+    result = getIntLitType(lowerNode)
+  else:
+    var n = newNode(nkRange)
+    addSon(n, lowerNode)
+    addSon(n, newIntNode(nkIntLit, maxA))
+    result = newType(tyRange, typ.owner)
+    result.n = n
+    addSonSkipIntLit(result, skipTypes(typ, {tyRange}))
 
 proc makeRangeF(typ: PType, first, last: BiggestFloat): PType =
   var n = newNode(nkRange)
@@ -191,18 +197,20 @@ proc getIntervalType*(m: TMagic, n: PNode): PType =
   of mSubI, mSubI64, mSubU:
     binaryOp(`|-|`)
   of mBitandI, mBitandI64:
+    # since uint64 is still not even valid for 'range' (since it's no ordinal
+    # yet), we exclude it from the list (see bug #1638) for now:
     var a = n.sons[1]
     var b = n.sons[2]
     # symmetrical:
-    if b.kind notin {nkIntLit..nkUInt64Lit}: swap(a, b)
-    if b.kind in {nkIntLit..nkUInt64Lit}:
+    if b.kind notin {nkIntLit..nkUInt32Lit}: swap(a, b)
+    if b.kind in {nkIntLit..nkUInt32Lit}:
       let x = b.intVal|+|1
       if (x and -x) == x and x >= 0:
         result = makeRange(a.typ, 0, b.intVal)
   of mModU:
     let a = n.sons[1]
     let b = n.sons[2]
-    if b.kind in {nkIntLit..nkUInt64Lit}:
+    if b.kind in {nkIntLit..nkUInt32Lit}:
       if b.intVal >= 0:
         result = makeRange(a.typ, 0, b.intVal-1)
       else:
@@ -249,6 +257,7 @@ proc evalIs(n, a: PNode): PNode =
       result = newIntNode(nkIntLit, ord(t.kind == tyProc and
                                         t.callConv == ccClosure and 
                                         tfIterator in t.flags))
+    else: discard
   else:
     # XXX semexprs.isOpImpl is slightly different and requires a context. yay.
     let t2 = n[2].typ
@@ -312,8 +321,14 @@ proc evalOp(m: TMagic, n, a, b, c: PNode): PNode =
     of tyInt64, tyInt, tyUInt..tyUInt64:
       result = newIntNodeT(`shr`(getInt(a), getInt(b)), n)
     else: internalError(n.info, "constant folding for shr")
-  of mDivI, mDivI64: result = newIntNodeT(getInt(a) div getInt(b), n)
-  of mModI, mModI64: result = newIntNodeT(getInt(a) mod getInt(b), n)
+  of mDivI, mDivI64:
+    let y = getInt(b)
+    if y != 0:
+      result = newIntNodeT(getInt(a) div y, n)
+  of mModI, mModI64:
+    let y = getInt(b)
+    if y != 0:
+      result = newIntNodeT(getInt(a) mod y, n)
   of mAddF64: result = newFloatNodeT(getFloat(a) + getFloat(b), n)
   of mSubF64: result = newFloatNodeT(getFloat(a) - getFloat(b), n)
   of mMulF64: result = newFloatNodeT(getFloat(a) * getFloat(b), n)
@@ -352,8 +367,14 @@ proc evalOp(m: TMagic, n, a, b, c: PNode): PNode =
   of mAddU: result = newIntNodeT(`+%`(getInt(a), getInt(b)), n)
   of mSubU: result = newIntNodeT(`-%`(getInt(a), getInt(b)), n)
   of mMulU: result = newIntNodeT(`*%`(getInt(a), getInt(b)), n)
-  of mModU: result = newIntNodeT(`%%`(getInt(a), getInt(b)), n)
-  of mDivU: result = newIntNodeT(`/%`(getInt(a), getInt(b)), n)
+  of mModU:
+    let y = getInt(b)
+    if y != 0:
+      result = newIntNodeT(`%%`(getInt(a), y), n)
+  of mDivU:
+    let y = getInt(b)
+    if y != 0:
+      result = newIntNodeT(`/%`(getInt(a), y), n)
   of mLeSet: result = newIntNodeT(ord(containsSets(a, b)), n)
   of mEqSet: result = newIntNodeT(ord(equalSets(a, b)), n)
   of mLtSet: 
@@ -374,6 +395,7 @@ proc evalOp(m: TMagic, n, a, b, c: PNode): PNode =
   of mInSet: result = newIntNodeT(ord(inSet(a, b)), n)
   of mRepr:
     # BUGFIX: we cannot eval mRepr here for reasons that I forgot.
+    discard
   of mIntToStr, mInt64ToStr: result = newStrNodeT($(getOrdValue(a)), n)
   of mBoolToStr: 
     if getOrdValue(a) == 0: result = newStrNodeT("false", n)
@@ -398,10 +420,8 @@ proc evalOp(m: TMagic, n, a, b, c: PNode): PNode =
      mExit, mInc, ast.mDec, mEcho, mSwap, mAppendStrCh, 
      mAppendStrStr, mAppendSeqElem, mSetLengthStr, mSetLengthSeq, 
      mParseExprToAst, mParseStmtToAst, mExpandToAst, mTypeTrait,
-     mNLen..mNError, mEqRef, mSlurp, mStaticExec, mNGenSym: 
+     mNLen..mNError, mEqRef, mSlurp, mStaticExec, mNGenSym, mSpawn, mParallel:
     discard
-  of mRand:
-    result = newIntNodeT(math.random(a.getInt.int), n)
   else: internalError(a.info, "evalOp(" & $m & ')')
   
 proc getConstIfExpr(c: PSym, n: PNode): PNode = 
@@ -496,7 +516,7 @@ proc foldConv*(n, a: PNode; check = false): PNode =
   of tyInt..tyInt64: 
     case skipTypes(a.typ, abstractRange).kind
     of tyFloat..tyFloat64:
-      result = newIntNodeT(system.toInt(getFloat(a)), n)
+      result = newIntNodeT(int(getFloat(a)), n)
     of tyChar: result = newIntNodeT(getOrdValue(a), n)
     else: 
       result = a
@@ -532,17 +552,18 @@ proc foldArrayAccess(m: PSym, n: PNode): PNode =
   var idx = getOrdValue(y)
   case x.kind
   of nkPar: 
-    if (idx >= 0) and (idx < sonsLen(x)): 
+    if idx >= 0 and idx < sonsLen(x):
       result = x.sons[int(idx)]
       if result.kind == nkExprColonExpr: result = result.sons[1]
     else:
       localError(n.info, errIndexOutOfBounds)
-  of nkBracket, nkMetaNode: 
-    if (idx >= 0) and (idx < sonsLen(x)): result = x.sons[int(idx)]
+  of nkBracket:
+    idx = idx - x.typ.firstOrd
+    if idx >= 0 and idx < x.len: result = x.sons[int(idx)]
     else: localError(n.info, errIndexOutOfBounds)
-  of nkStrLit..nkTripleStrLit: 
+  of nkStrLit..nkTripleStrLit:
     result = newNodeIT(nkCharLit, x.info, n.typ)
-    if (idx >= 0) and (idx < len(x.strVal)): 
+    if idx >= 0 and idx < len(x.strVal): 
       result.intVal = ord(x.strVal[int(idx)])
     elif idx == len(x.strVal): 
       discard
@@ -594,10 +615,6 @@ proc getConstExpr(m: PSym, n: PNode): PNode =
       of mIsMainModule: result = newIntNodeT(ord(sfMainModule in m.flags), n)
       of mCompileDate: result = newStrNodeT(times.getDateStr(), n)
       of mCompileTime: result = newStrNodeT(times.getClockStr(), n)
-      of mNimrodVersion: result = newStrNodeT(VersionAsString, n)
-      of mNimrodMajor: result = newIntNodeT(VersionMajor, n)
-      of mNimrodMinor: result = newIntNodeT(VersionMinor, n)
-      of mNimrodPatch: result = newIntNodeT(VersionPatch, n)
       of mCpuEndian: result = newIntNodeT(ord(CPU[targetCPU].endian), n)
       of mHostOS: result = newStrNodeT(toLower(platform.OS[targetOS].name), n)
       of mHostCPU: result = newStrNodeT(platform.CPU[targetCPU].name.toLower, n)
@@ -677,9 +694,9 @@ proc getConstExpr(m: PSym, n: PNode): PNode =
           result = evalIs(n, a)
       else:
         result = magicCall(m, n)
-    except EOverflow: 
+    except OverflowError: 
       localError(n.info, errOverOrUnderflow)
-    except EDivByZero: 
+    except DivByZeroError: 
       localError(n.info, errConstantDivisionByZero)
   of nkAddr: 
     var a = getConstExpr(m, n.sons[0])

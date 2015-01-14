@@ -1,7 +1,6 @@
 discard """
   file: "tclosure.nim"
-  output: "2 4 6 8 10"
-  disabled: true
+  output: "1 3 6 11 20"
 """
 # Test the closure implementation
 
@@ -30,18 +29,19 @@ proc testA() =
 testA()
 
 myData.each do (x: int):
-  write(stout, x)
+  write(stdout, x)
+  write(stdout, " ")
 
 #OUT 2 4 6 8 10
 
 type
   ITest = tuple[
-    setter: proc(v: Int),
+    setter: proc(v: int),
     getter: proc(): int]
 
 proc getInterf(): ITest =
   var shared: int
   
-  return (setter: proc (x) = shared = x,
+  return (setter: proc (x: int) = shared = x,
           getter: proc (): int = return shared)
 

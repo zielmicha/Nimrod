@@ -9,7 +9,7 @@ type
   TRunMode = enum
     ProcRun, CaasRun, SymbolProcRun
 
-  TNimrodSession* = object
+  NimSession* = object
     nim: PProcess # Holds the open process for CaasRun sessions, nil otherwise.
     mode: TRunMode # Stores the type of run mode the session was started with.
     lastOutput: string # Preserves the last output, needed for ProcRun mode.
@@ -25,16 +25,16 @@ const
   silentReplaceText = "--verbosity:0 --hints:off"
 
 var
-  TesterDir = getAppDir()
-  NimrodBin = TesterDir / "../bin/nimrod"
+  TesterDir = getAppDir() / ".."
+  NimBin = TesterDir / "../bin/nim"
 
-proc replaceVars(session: var TNimrodSession, text: string): string =
+proc replaceVars(session: var NimSession, text: string): string =
   result = text.replace(filenameReplaceVar, session.filename)
   result = result.replace(moduleReplaceVar, session.modname)
   result = result.replace(silentReplaceVar, silentReplaceText)
 
-proc startNimrodSession(project, script: string, mode: TRunMode):
-                        TNimrodSession =
+proc startNimSession(project, script: string, mode: TRunMode):
+                        NimSession =
   let (dir, name, ext) = project.splitFile
   result.mode = mode
   result.lastOutput = ""
@@ -50,10 +50,10 @@ proc startNimrodSession(project, script: string, mode: TRunMode):
     removeDir(nimcacheDir / "nimcache")
 
   if mode == CaasRun:
-    result.nim = startProcess(NimrodBin, workingDir = dir,
+    result.nim = startProcess(NimBin, workingDir = dir,
       args = ["serve", "--server.type:stdin", name])
 
-proc doCaasCommand(session: var TNimrodSession, command: string): string =
+proc doCaasCommand(session: var NimSession, command: string): string =
   assert session.mode == CaasRun
   session.nim.inputStream.write(session.replaceVars(command) & "\n")
   session.nim.inputStream.flush
@@ -69,11 +69,11 @@ proc doCaasCommand(session: var TNimrodSession, command: string): string =
       result = "FAILED TO EXECUTE: " & command & "\n" & result
       break
 
-proc doProcCommand(session: var TNimrodSession, command: string): string =
+proc doProcCommand(session: var NimSession, command: string): string =
   assert session.mode == ProcRun or session.mode == SymbolProcRun
   except: result = "FAILED TO EXECUTE: " & command & "\n" & result
   var
-    process = startProcess(NimrodBin, args = session.replaceVars(command).split)
+    process = startProcess(NimBin, args = session.replaceVars(command).split)
     stream = outputStream(process)
     line = TaintedString("")
 
@@ -84,8 +84,12 @@ proc doProcCommand(session: var TNimrodSession, command: string): string =
 
   process.close()
 
-proc doCommand(session: var TNimrodSession, command: string) =
+proc doCommand(session: var NimSession, command: string) =
   if session.mode == CaasRun:
+    if not session.nim.running:
+      session.lastOutput = "FAILED TO EXECUTE: " & command & "\n" &
+          "Exit code " & $session.nim.peekExitCode
+      return
     session.lastOutput = doCaasCommand(session,
                                        command & " " & session.filename)
   else:
@@ -98,11 +102,11 @@ proc doCommand(session: var TNimrodSession, command: string) =
     session.lastOutput = doProcCommand(session,
                                        command & " " & session.filename)
 
-proc close(session: var TNimrodSession) {.destructor.} =
+proc close(session: var NimSession) {.destructor.} =
   if session.mode == CaasRun:
     session.nim.close
 
-proc doScenario(script: string, output: PStream, mode: TRunMode): bool =
+proc doScenario(script: string, output: PStream, mode: TRunMode, verbose: bool): bool =
   result = true
 
   var f = open(script)
@@ -110,7 +114,7 @@ proc doScenario(script: string, output: PStream, mode: TRunMode): bool =
 
   if f.readLine(project):
     var
-      s = startNimrodSession(script.parentDir / project.string, script, mode)
+      s = startNimSession(script.parentDir / project.string, script, mode)
       tline = TaintedString("")
       ln = 1
 
@@ -134,7 +138,7 @@ proc doScenario(script: string, output: PStream, mode: TRunMode): bool =
         continue
       elif line.startsWith(">"):
         s.doCommand(line.substr(1).strip)
-        output.writeln line, "\n", s.lastOutput
+        output.writeln line, "\n", if verbose: s.lastOutput else: ""
       else:
         var expectMatch = true
         var pattern = s.replaceVars(line)
@@ -151,13 +155,14 @@ proc doScenario(script: string, output: PStream, mode: TRunMode): bool =
           output.writeln "FAILURE ", line
           result = false
 
-iterator caasTestsRunner*(filter = ""): tuple[test, output: string,
-                                              status: bool, mode: TRunMode] =
+iterator caasTestsRunner*(filter = "", verbose = false): tuple[test,
+                                              output: string, status: bool,
+                                              mode: TRunMode] =
   for scenario in os.walkFiles(TesterDir / "caas/*.txt"):
     if filter.len > 0 and find(scenario, filter) == -1: continue
     for mode in modes:
       var outStream = newStringStream()
-      let r = doScenario(scenario, outStream, mode)
+      let r = doScenario(scenario, outStream, mode, verbose)
       yield (scenario, outStream.data, r, mode)
 
 when isMainModule:
@@ -175,9 +180,12 @@ when isMainModule:
   if verbose and len(filter) > 0:
     echo "Running only test cases matching filter '$1'" % [filter]
 
-  for test, output, result, mode in caasTestsRunner(filter):
+  for test, output, result, mode in caasTestsRunner(filter, verbose):
     if not result or verbose:
-      echo test, "\n", output, "-> ", $mode, ":", $result, "\n-----"
+      echo "Mode ", $mode, " (", if result: "succeeded)" else: "failed)"
+      echo test
+      echo output
+      echo "---------\n"
     if not result:
       failures += 1
 

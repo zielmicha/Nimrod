@@ -1,6 +1,6 @@
 #
 #
-#           The Nimrod Compiler
+#           The Nim Compiler
 #        (c) Copyright 2012 Andreas Rumpf
 #
 #    See the file "copying.txt", included in this
@@ -13,10 +13,10 @@
 import 
   strutils, lists, options, ast, astalgo, llstream, msgs, platform, os, 
   condsyms, idents, renderer, types, extccomp, math, magicsys, nversion, 
-  nimsets, syntaxes, times, rodread, semthreads, idgen
+  nimsets, syntaxes, times, rodread, idgen
 
 type  
-  TPassContext* = object of TObject # the pass's context
+  TPassContext* = object of RootObj # the pass's context
     fromCache*: bool  # true if created by "openCached"
    
   PPassContext* = ref TPassContext
@@ -74,7 +74,8 @@ proc astNeeded*(s: PSym): bool =
       ({sfCompilerProc, sfCompileTime} * s.flags == {}) and
       (s.typ.callConv != ccInline) and 
       (s.ast.sons[genericParamsPos].kind == nkEmpty): 
-    result = semthreads.needsGlobalAnalysis()
+    result = false
+    # XXX this doesn't really make sense with excessive CTFE
   else:
     result = true
   

@@ -1,6 +1,6 @@
 #
 #
-#           The Nimrod Compiler
+#           The Nim Compiler
 #        (c) Copyright 2012 Andreas Rumpf
 #
 #    See the file "copying.txt", included in this
@@ -17,14 +17,15 @@ type
   TFilterKind* = enum 
     filtNone, filtTemplate, filtReplace, filtStrip
   TParserKind* = enum 
-    skinStandard, skinBraces, skinEndX
+    skinStandard, skinStrongSpaces, skinBraces, skinEndX
 
 const 
-  parserNames*: array[TParserKind, string] = ["standard", "braces", "endx"]
-  filterNames*: array[TFilterKind, string] = ["none", "stdtmpl", "replace", 
-    "strip"]
+  parserNames*: array[TParserKind, string] = ["standard", "strongspaces",
+                                              "braces", "endx"]
+  filterNames*: array[TFilterKind, string] = ["none", "stdtmpl", "replace",
+                                              "strip"]
 
-type 
+type
   TParsers*{.final.} = object 
     skin*: TParserKind
     parser*: TParser
@@ -43,7 +44,7 @@ proc parseTopLevelStmt*(p: var TParsers): PNode
 proc parseFile(fileIdx: int32): PNode =
   var 
     p: TParsers
-    f: TFile
+    f: File
   let filename = fileIdx.toFullPath
   if not open(f, filename):
     rawMessage(errCannotOpenFile, filename)
@@ -54,25 +55,23 @@ proc parseFile(fileIdx: int32): PNode =
 
 proc parseAll(p: var TParsers): PNode = 
   case p.skin
-  of skinStandard: 
+  of skinStandard, skinStrongSpaces:
     result = parser.parseAll(p.parser)
   of skinBraces: 
     result = pbraces.parseAll(p.parser)
   of skinEndX: 
     internalError("parser to implement") 
     result = ast.emptyNode
-    # skinEndX: result := pendx.parseAll(p.parser);
   
 proc parseTopLevelStmt(p: var TParsers): PNode = 
   case p.skin
-  of skinStandard: 
+  of skinStandard, skinStrongSpaces:
     result = parser.parseTopLevelStmt(p.parser)
   of skinBraces: 
     result = pbraces.parseTopLevelStmt(p.parser)
   of skinEndX: 
     internalError("parser to implement") 
     result = ast.emptyNode
-    #skinEndX: result := pendx.parseTopLevelStmt(p.parser);
   
 proc utf8Bom(s: string): int = 
   if (s[0] == '\xEF') and (s[1] == '\xBB') and (s[2] == '\xBF'): 
@@ -170,7 +169,9 @@ proc openParsers(p: var TParsers, fileIdx: int32, inputstream: PLLStream) =
   else: s = inputstream
   case p.skin
   of skinStandard, skinBraces, skinEndX:
-    parser.openParser(p.parser, fileIdx, s)
+    parser.openParser(p.parser, fileIdx, s, false)
+  of skinStrongSpaces:
+    parser.openParser(p.parser, fileIdx, s, true)
   
-proc closeParsers(p: var TParsers) = 
+proc closeParsers(p: var TParsers) =
   parser.closeParser(p.parser)

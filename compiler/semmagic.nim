@@ -1,7 +1,7 @@
 #
 #
-#           The Nimrod Compiler
-#        (c) Copyright 2013 Andreas Rumpf
+#           The Nim Compiler
+#        (c) Copyright 2015 Andreas Rumpf
 #
 #    See the file "copying.txt", included in this
 #    distribution, for details about the copyright.
@@ -126,9 +126,11 @@ proc magicsAfterOverloadResolution(c: PContext, n: PNode,
     result.typ = getSysType(tyString)
   of mInstantiationInfo: result = semInstantiationInfo(c, n)
   of mOrd: result = semOrd(c, n)
-  of mHigh: result = semLowHigh(c, n, mHigh)
+  of mHigh, mLow: result = semLowHigh(c, n, n[0].sym.magic)
   of mShallowCopy: result = semShallowCopy(c, n, flags)
   of mNBindSym: result = semBindSym(c, n)
   of mLocals: result = semLocals(c, n)
+  of mProcCall:
+    result = n
+    result.typ = n[1].typ
   else: result = n
-

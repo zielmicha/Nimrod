@@ -1,25 +1,30 @@
 #
 #
-#            Nimrod's Runtime Library
-#        (c) Copyright 2012 Andreas Rumpf
+#            Nim's Runtime Library
+#        (c) Copyright 2015 Andreas Rumpf
 #
 #    See the file "copying.txt", included in this
 #    distribution, for details about the copyright.
 #
 
+## **Warning**: This module uses ``immediate`` macros which are known to
+## cause problems. Do yourself a favor and import the module
+## as ``from htmlgen import nil`` and then fully qualify the macros.
+##
+##
 ## This module implements a simple `XML`:idx: and `HTML`:idx: code 
 ## generator. Each commonly used HTML tag has a corresponding macro
 ## that generates a string with its HTML representation.
 ##
 ## Example:
 ##
-## .. code-block:: nimrod
-##   var nim = "Nimrod"
-##   echo h1(a(href="http://nimrod-code.org", nim))
+## .. code-block:: Nim
+##   var nim = "Nim"
+##   echo h1(a(href="http://nim-lang.org", nim))
 ##  
 ## Writes the string::
 ##   
-##   <h1><a href="http://nimrod-code.org">Nimrod</a></h1>
+##   <h1><a href="http://nim-lang.org">Nim</a></h1>
 ##
 
 import
@@ -48,8 +53,7 @@ proc delete[T](s: var seq[T], attr: T): bool =
     setLen(s, L-1)
     result = true
 
-proc xmlCheckedTag*(e: PNimrodNode, tag: string,
-    optAttr = "", reqAttr = "",
+proc xmlCheckedTag*(e: PNimrodNode, tag: string, optAttr = "", reqAttr = "",
     isLeaf = false): PNimrodNode {.compileTime.} =
   ## use this procedure to define a new XML tag
   
@@ -260,7 +264,7 @@ macro html*(e: expr): expr {.immediate.} =
   let e = callsite()
   result = xmlCheckedTag(e, "html", "xmlns", "")
 
-macro hr*(e: expr): expr {.immediate.} = 
+macro hr*(): expr {.immediate.} = 
   ## generates the HTML ``hr`` element.
   let e = callsite()
   result = xmlCheckedTag(e, "hr", commonAttr, "", true)
@@ -479,7 +483,7 @@ macro `var`*(e: expr): expr {.immediate.} =
   result = xmlCheckedTag(e, "var", commonAttr)
 
 when isMainModule:
-  var nim = "Nimrod"
-  echo h1(a(href="http://nimrod-code.org", nim))
+  var nim = "Nim"
+  echo h1(a(href="http://nim-lang.org", nim))
   echo form(action="test", `accept-charset` = "Content-Type")
 

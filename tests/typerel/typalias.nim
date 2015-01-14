@@ -1,7 +1,7 @@
 
 type
   TMyObj = TYourObj
-  TYourObj = object of TObject
+  TYourObj = object of RootObj
     x, y: int
   
 proc init: TYourObj =
@@ -9,7 +9,7 @@ proc init: TYourObj =
   result.y = -1
   
 proc f(x: var TYourObj) =
-  nil
+  discard
   
 var m: TMyObj = init()
 f(m)

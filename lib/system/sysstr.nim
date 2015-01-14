@@ -1,6 +1,6 @@
 #
 #
-#            Nimrod's Runtime Library
+#            Nim's Runtime Library
 #        (c) Copyright 2012 Andreas Rumpf
 #
 #    See the file "copying.txt", included in this
@@ -32,7 +32,7 @@ proc eqStrings(a, b: NimString): bool {.inline, compilerProc.} =
   return a.len == b.len and
     c_memcmp(a.data, b.data, a.len * sizeof(char)) == 0'i32
 
-when defined(allocAtomic):
+when declared(allocAtomic):
   template allocStr(size: expr): expr =
     cast[NimString](allocAtomic(size))
 else:
@@ -85,7 +85,7 @@ proc copyStringRC1(src: NimString): NimString {.compilerRtl.} =
   if src != nil:
     var s = src.space
     if s < 8: s = 7
-    when defined(newObjRC1):
+    when declared(newObjRC1):
       result = cast[NimString](newObjRC1(addr(strDesc), sizeof(TGenericSeq) +
                                s+1))
     else:
@@ -119,7 +119,7 @@ proc addChar(s: NimString, c: char): NimString =
   inc(result.len)
 
 # These routines should be used like following:
-#   <Nimrod code>
+#   <Nim code>
 #   s &= "Hello " & name & ", how do you feel?"
 #
 #   <generated C code>
@@ -130,7 +130,7 @@ proc addChar(s: NimString, c: char): NimString =
 #     appendString(s, strLit3);
 #   }
 #
-#   <Nimrod code>
+#   <Nim code>
 #   s = "Hello " & name & ", how do you feel?"
 #
 #   <generated C code>
@@ -143,7 +143,7 @@ proc addChar(s: NimString, c: char): NimString =
 #     s = tmp0;
 #   }
 #
-#   <Nimrod code>
+#   <Nim code>
 #   s = ""
 #
 #   <generated C code>
@@ -217,7 +217,7 @@ proc setLengthSeq(seq: PGenericSeq, elemSize, newLen: int): PGenericSeq {.
           gch.tempStack.len = len0
       else:
         for i in newLen..result.len-1:
-          forAllChildrenAux(cast[pointer](cast[TAddress](result) +%
+          forAllChildrenAux(cast[pointer](cast[ByteAddress](result) +%
                             GenericSeqSize +% (i*%elemSize)),
                             extGetCellType(result).base, waZctDecRef)
       
@@ -227,7 +227,7 @@ proc setLengthSeq(seq: PGenericSeq, elemSize, newLen: int): PGenericSeq {.
     # presense of user defined destructors, the user will expect the cell to be
     # "destroyed" thus creating the same problem. We can destoy the cell in the
     # finalizer of the sequence, but this makes destruction non-deterministic.
-    zeroMem(cast[pointer](cast[TAddress](result) +% GenericSeqSize +%
+    zeroMem(cast[pointer](cast[ByteAddress](result) +% GenericSeqSize +%
            (newLen*%elemSize)), (result.len-%newLen) *% elemSize)
   result.len = newLen
 
@@ -250,10 +250,115 @@ proc nimIntToStr(x: int): string {.compilerRtl.} =
   for j in 0..i div 2 - 1:
     swap(result[j], result[i-j-1])
 
-proc nimFloatToStr(x: float): string {.compilerproc.} =
-  var buf: array [0..59, char]
-  c_sprintf(buf, "%#.16e", x)
-  return $buf
+proc nimFloatToStr(f: float): string {.compilerproc.} =
+  var buf: array[0..64, char]
+  var n: int = c_sprintf(buf, "%.16g", f)
+  var hasDot = false
+  for i in 0..n-1:
+    if buf[i] == ',':
+      buf[i] = '.'
+      hasDot = true
+    elif buf[i] in {'a'..'z', 'A'..'Z', '.'}: 
+      hasDot = true
+  if not hasDot:
+    buf[n] = '.'
+    buf[n+1] = '0'
+    buf[n+2] = '\0'
+  result = $buf
+
+proc strtod(buf: cstring, endptr: ptr cstring): float64 {.importc,
+  header: "<stdlib.h>", noSideEffect.}
+
+var decimalPoint: char
+
+proc getDecimalPoint(): char =
+  result = decimalPoint
+  if result == '\0':
+    if strtod("0,5", nil) == 0.5: result = ','
+    else: result = '.'
+    # yes this is threadsafe in practice, spare me:
+    decimalPoint = result
+
+const
+  IdentChars = {'a'..'z', 'A'..'Z', '0'..'9', '_'}
+
+proc nimParseBiggestFloat(s: string, number: var BiggestFloat,
+                          start = 0): int {.compilerProc.} =
+  # This routine leverages `strtod()` for the non-trivial task of
+  # parsing floating point numbers correctly. Because `strtod()` is
+  # locale-dependent with respect to the radix character, we create
+  # a copy where the decimal point is replaced with the locale's
+  # radix character.
+  var
+    i = start
+    sign = 1.0
+    t: array[500, char] # flaviu says: 325 is the longest reasonable literal
+    ti = 0
+    hasdigits = false
+
+  template addToBuf(c) =
+    if ti < t.high:
+      t[ti] = c; inc(ti)
+  
+  # Sign?
+  if s[i] == '+' or s[i] == '-':
+    if s[i] == '-':
+      sign = -1.0
+    t[ti] = s[i]
+    inc(i); inc(ti)
+
+  # NaN?
+  if s[i] == 'N' or s[i] == 'n':
+    if s[i+1] == 'A' or s[i+1] == 'a':
+      if s[i+2] == 'N' or s[i+2] == 'n':
+        if s[i+3] notin IdentChars:
+          number = NaN
+          return i+3 - start
+    return 0
+
+  # Inf?
+  if s[i] == 'I' or s[i] == 'i':
+    if s[i+1] == 'N' or s[i+1] == 'n':
+      if s[i+2] == 'F' or s[i+2] == 'f':
+        if s[i+3] notin IdentChars: 
+          number = Inf*sign
+          return i+3 - start
+    return 0
+
+  # Integer part?
+  while s[i] in {'0'..'9'}:
+    hasdigits = true
+    addToBuf(s[i])
+    inc(i);
+    while s[i] == '_': inc(i)
+
+  # Fractional part?
+  if s[i] == '.':
+    addToBuf(getDecimalPoint())
+    inc(i)
+    while s[i] in {'0'..'9'}:
+      hasdigits = true
+      addToBuf(s[i])
+      inc(i)
+      while s[i] == '_': inc(i)
+  if not hasdigits:
+    return 0
+
+  # Exponent?
+  if s[i] in {'e', 'E'}:
+    addToBuf(s[i])
+    inc(i)
+    if s[i] in {'+', '-'}:
+      addToBuf(s[i])
+      inc(i)
+    if s[i] notin {'0'..'9'}:
+      return 0
+    while s[i] in {'0'..'9'}:
+      addToBuf(s[i])
+      inc(i)
+      while s[i] == '_': inc(i)
+  number = strtod(t, nil)
+  result = i - start
 
 proc nimInt64ToStr(x: int64): string {.compilerRtl.} =
   result = newString(sizeof(x)*4)

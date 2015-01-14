@@ -1,6 +1,6 @@
 #
 #
-#           The Nimrod Compiler
+#           The Nim Compiler
 #        (c) Copyright 2012 Andreas Rumpf
 #
 #    See the file "copying.txt", included in this
@@ -8,10 +8,11 @@
 #
 
 # This module implements a generic doubled linked list.
-
+# TODO Remove this and replace it with something sensible
+import os
 type 
   PListEntry* = ref TListEntry
-  TListEntry* = object of TObject
+  TListEntry* = object of RootObj
     prev*, next*: PListEntry
 
   TStrEntry* = object of TListEntry
@@ -103,11 +104,12 @@ proc bringToFront*(list: var TLinkedList, entry: PListEntry) =
     entry.next = list.head
     list.head = entry
 
-proc excludeStr*(list: var TLinkedList, data: string) =
+proc excludePath*(list: var TLinkedList, data: string) =
   var it = list.head
   while it != nil:
     let nxt = it.next
-    if PStrEntry(it).data == data: remove(list, it)
+    if cmpPaths(PStrEntry(it).data, data) == 0:
+      remove(list, it)
     it = nxt
 
 proc find*(list: TLinkedList, fn: TCompareProc, closure: pointer): PListEntry = 

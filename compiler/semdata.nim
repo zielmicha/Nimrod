@@ -1,6 +1,6 @@
 #
 #
-#           The Nimrod Compiler
+#           The Nim Compiler
 #        (c) Copyright 2012 Andreas Rumpf
 #
 #    See the file "copying.txt", included in this
@@ -35,6 +35,7 @@ type
     inTryStmt*: int           # whether we are in a try statement; works also
                               # in standalone ``except`` and ``finally``
     next*: PProcCon           # used for stacking procedure contexts
+    wasForwarded*: bool       # whether the current proc has a separate header
   
   TInstantiationPair* = object
     genericSym*: PSym
@@ -42,7 +43,7 @@ type
 
   TExprFlag* = enum 
     efLValue, efWantIterator, efInTypeof, efWantStmt, efDetermineType,
-    efAllowDestructor, efWantValue
+    efAllowDestructor, efWantValue, efOperand, efNoSemCheck
   TExprFlags* = set[TExprFlag]
 
   PContext* = ref TContext
@@ -52,13 +53,12 @@ type
     importTable*: PScope       # scope for all imported symbols
     topLevelScope*: PScope     # scope for all top-level symbols
     p*: PProcCon               # procedure context
-    friendModule*: PSym        # current friend module; may access private data;
+    friendModules*: seq[PSym]  # friend modules; may access private data;
                                # this is used so that generic instantiations
                                # can access private object fields
     instCounter*: int          # to prevent endless instantiations
    
-    threadEntries*: TSymSeq    # list of thread entries to check
-    ambiguousSymbols*: TIntSet # ids of all ambiguous symbols (cannot
+    ambiguousSymbols*: IntSet  # ids of all ambiguous symbols (cannot
                                # store this info in the syms themselves!)
     inTypeClass*: int          # > 0 if we are in a user-defined type class
     inGenericContext*: int     # > 0 if we are in a generic type
@@ -73,22 +73,28 @@ type
     libs*: TLinkedList         # all libs used by this module
     semConstExpr*: proc (c: PContext, n: PNode): PNode {.nimcall.} # for the pragmas
     semExpr*: proc (c: PContext, n: PNode, flags: TExprFlags = {}): PNode {.nimcall.}
-    semTryExpr*: proc (c: PContext, n: PNode,flags: TExprFlags = {},
-                       bufferErrors = false): PNode {.nimcall.}
+    semTryExpr*: proc (c: PContext, n: PNode,flags: TExprFlags = {}): PNode {.nimcall.}
     semTryConstExpr*: proc (c: PContext, n: PNode): PNode {.nimcall.}
     semOperand*: proc (c: PContext, n: PNode, flags: TExprFlags = {}): PNode {.nimcall.}
     semConstBoolExpr*: proc (c: PContext, n: PNode): PNode {.nimcall.} # XXX bite the bullet
     semOverloadedCall*: proc (c: PContext, n, nOrig: PNode,
                               filter: TSymKinds): PNode {.nimcall.}
     semTypeNode*: proc(c: PContext, n: PNode, prev: PType): PType {.nimcall.}
-    includedFiles*: TIntSet    # used to detect recursive include files
+    semInferredLambda*: proc(c: PContext, pt: TIdTable, n: PNode): PNode
+    semGenerateInstance*: proc (c: PContext, fn: PSym, pt: TIdTable,
+                                info: TLineInfo): PSym
+    includedFiles*: IntSet    # used to detect recursive include files
     userPragmas*: TStrTable
     evalContext*: PEvalContext
-    unknownIdents*: TIntSet    # ids of all unknown identifiers to prevent
+    unknownIdents*: IntSet     # ids of all unknown identifiers to prevent
                                # naming it multiple times
     generics*: seq[TInstantiationPair] # pending list of instantiated generics to compile
     lastGenericIdx*: int      # used for the generics stack
     hloLoopDetector*: int     # used to prevent endless loops in the HLO
+    inParallelStmt*: int
+    instDeepCopy*: proc (c: PContext; dc: PSym; t: PType;
+                         info: TLineInfo): PSym {.nimcall.}
+
    
 proc makeInstPair*(s: PSym, inst: PInstantiation): TInstantiationPair =
   result.genericSym = s
@@ -166,8 +172,7 @@ proc newContext(module: PSym): PContext =
   initLinkedList(result.libs)
   append(result.optionStack, newOptionEntry())
   result.module = module
-  result.friendModule = module
-  result.threadEntries = @[]
+  result.friendModules = @[module]
   result.converters = @[]
   result.patterns = @[]
   result.includedFiles = initIntSet()
@@ -211,7 +216,6 @@ proc makeTypeDesc*(c: PContext, typ: PType): PType =
 
 proc makeTypeSymNode*(c: PContext, typ: PType, info: TLineInfo): PNode =
   let typedesc = makeTypeDesc(c, typ)
-  rawAddSon(typedesc, newTypeS(tyNone, c))
   let sym = newSym(skType, idAnon, getCurrOwner(), info).linkTo(typedesc)
   return newSymNode(sym, info)
 
@@ -234,17 +238,41 @@ proc makeAndType*(c: PContext, t1, t2: PType): PType =
   result.sons = @[t1, t2]
   propagateToOwner(result, t1)
   propagateToOwner(result, t2)
+  result.flags.incl((t1.flags + t2.flags) * {tfHasStatic})
 
 proc makeOrType*(c: PContext, t1, t2: PType): PType =
   result = newTypeS(tyOr, c)
   result.sons = @[t1, t2]
   propagateToOwner(result, t1)
   propagateToOwner(result, t2)
+  result.flags.incl((t1.flags + t2.flags) * {tfHasStatic})
 
 proc makeNotType*(c: PContext, t1: PType): PType =
   result = newTypeS(tyNot, c)
   result.sons = @[t1]
   propagateToOwner(result, t1)
+  result.flags.incl(t1.flags * {tfHasStatic})
+
+proc nMinusOne*(n: PNode): PNode =
+  result = newNode(nkCall, n.info, @[
+    newSymNode(getSysMagic("<", mUnaryLt)),
+    n])
+
+# Remember to fix the procs below this one when you make changes!
+proc makeRangeWithStaticExpr*(c: PContext, n: PNode): PType =
+  let intType = getSysType(tyInt)
+  result = newTypeS(tyRange, c)
+  result.sons = @[intType]
+  result.n = newNode(nkRange, n.info, @[
+    newIntTypeNode(nkIntLit, 0, intType),
+    makeStaticExpr(c, n.nMinusOne)])
+
+template rangeHasStaticIf*(t: PType): bool =
+  # this accepts the ranges's node
+  t.n != nil and t.n.len > 1 and t.n[1].kind == nkStaticExpr
+
+template getStaticTypeFromRange*(t: PType): PType =
+  t.n[1][0][1].typ
 
 proc newTypeS(kind: TTypeKind, c: PContext): PType =
   result = newType(kind, getCurrOwner())
@@ -272,7 +300,7 @@ proc makeRangeType*(c: PContext; first, last: BiggestInt;
   addSonSkipIntLit(result, intType) # basetype of range
 
 proc markIndirect*(c: PContext, s: PSym) {.inline.} =
-  if s.kind in {skProc, skConverter, skMethod, skIterator}:
+  if s.kind in {skProc, skConverter, skMethod, skIterator, skClosureIterator}:
     incl(s.flags, sfAddrTaken)
     # XXX add to 'c' for global analysis
 
@@ -285,3 +313,8 @@ proc checkSonsLen*(n: PNode, length: int) =
 proc checkMinSonsLen*(n: PNode, length: int) = 
   if sonsLen(n) < length: illFormedAst(n)
 
+proc isTopLevel*(c: PContext): bool {.inline.} = 
+  result = c.currentScope.depthLevel <= 2
+
+proc experimentalMode*(c: PContext): bool {.inline.} =
+  result = gExperimentalMode or sfExperimental in c.module.flags

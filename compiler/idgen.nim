@@ -1,6 +1,6 @@
 #
 #
-#           The Nimrod Compiler
+#           The Nim Compiler
 #        (c) Copyright 2012 Andreas Rumpf
 #
 #    See the file "copying.txt", included in this
@@ -19,7 +19,7 @@ const
 when debugIds:
   import intsets
   
-  var usedIds = InitIntSet()
+  var usedIds = initIntSet()
 
 proc registerID*(id: PIdObj) = 
   when debugIds: 
@@ -53,7 +53,7 @@ proc saveMaxIds*(project: string) =
   f.close()
   
 proc loadMaxIds*(project: string) =
-  var f: TFile
+  var f: File
   if open(f, project.toGid, fmRead):
     var line = newStringOfCap(20)
     if f.readLine(line):

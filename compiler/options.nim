@@ -1,6 +1,6 @@
 #
 #
-#           The Nimrod Compiler
+#           The Nim Compiler
 #        (c) Copyright 2013 Andreas Rumpf
 #
 #    See the file "copying.txt", included in this
@@ -8,7 +8,7 @@
 #
 
 import
-  os, lists, strutils, strtabs
+  os, lists, strutils, strtabs, osproc, sets
   
 const
   hasTinyCBackend* = defined(tinyc)
@@ -16,6 +16,7 @@ const
   hasFFI* = defined(useFFI)
   newScopeForIf* = true
   useCaas* = not defined(noCaas)
+  noTimeMachine* = defined(avoidTimeMachine) and defined(macosx)
 
 type                          # please make sure we have under 32 options
                               # (improves code efficiency a lot!)
@@ -67,7 +68,7 @@ type                          # please make sure we have under 32 options
                               # also: generate header file
    
   TGlobalOptions* = set[TGlobalOption]
-  TCommands* = enum           # Nimrod's commands
+  TCommands* = enum           # Nim's commands
                               # **keep binary compatible**
     cmdNone, cmdCompileToC, cmdCompileToCpp, cmdCompileToOC, 
     cmdCompileToJS, cmdCompileToLLVM, cmdInterpret, cmdPretty, cmdDoc, 
@@ -100,6 +101,8 @@ var
   gSelectedGC* = gcRefc       # the selected GC
   searchPaths*, lazyPaths*: TLinkedList
   outFile*: string = ""
+  docSeeSrcUrl*: string = ""  # if empty, no seeSrc will be generated. \
+  # The string uses the formatting variables `path` and `line`.
   headerFile*: string = ""
   gVerbosity* = 1             # how verbose the compiler is
   gNumberOfProcessors*: int   # number of processors
@@ -111,7 +114,8 @@ var
   gDirtyBufferIdx* = 0'i32    # indicates the fileIdx of the dirty version of
                               # the tracked source X, saved by the CAAS client.
   gDirtyOriginalIdx* = 0'i32  # the original source file of the dirtified buffer.
-  gNoBabelPath* = false
+  gNoNimblePath* = false
+  gExperimentalMode*: bool
 
 proc importantComments*(): bool {.inline.} = gCmd in {cmdDoc, cmdIdeTools}
 proc usesNativeGC*(): bool {.inline.} = gSelectedGC >= gcRefc
@@ -136,7 +140,7 @@ const
   JsonExt* = "json"
   TexExt* = "tex"
   IniExt* = "ini"
-  DefaultConfig* = "nimrod.cfg"
+  DefaultConfig* = "nim.cfg"
   DocConfig* = "nimdoc.cfg"
   DocTexConfig* = "nimdoc.tex.cfg"
 
@@ -149,7 +153,6 @@ var
   gProjectPath* = "" # holds a path like /home/alice/projects/nimrod/compiler/
   gProjectFull* = "" # projectPath/projectName
   gProjectMainIdx*: int32 # the canonical path id of the main module
-  optMainModule* = "" # the main module that should be used for idetools commands
   nimcacheDir* = ""
   command* = "" # the main command (e.g. cc, check, scan, etc)
   commandArgs*: seq[string] = @[] # any arguments after the main command
@@ -186,8 +189,8 @@ proc getPrefixDir*(): string =
   result = splitPath(getAppDir()).head
 
 proc canonicalizePath*(path: string): string =
-  result = path.expandFilename
-  when not FileSystemCaseSensitive: result = result.toLower
+  when not FileSystemCaseSensitive: result = path.expandFilename.toLower
+  else: result = path.expandFilename
 
 proc shortenDir*(dir: string): string = 
   ## returns the interesting part of a dir
@@ -209,21 +212,45 @@ proc getGeneratedPath: string =
   result = if nimcacheDir.len > 0: nimcacheDir else: gProjectPath.shortenDir /
                                                          genSubDir
 
+template newPackageCache(): expr =
+  newStringTable(when FileSystemCaseSensitive:
+                   modeCaseInsensitive
+                 else:
+                   modeCaseSensitive)
+
+var packageCache = newPackageCache()
+
+proc resetPackageCache*() = packageCache = newPackageCache()
+
+iterator myParentDirs(p: string): string =
+  # XXX os's parentDirs is stupid (multiple yields) and triggers an old bug...
+  var current = p
+  while true:
+    current = current.parentDir
+    if current.len == 0: break
+    yield current
+
 proc getPackageName*(path: string): string =
-  var q = 1
-  var b = 0
-  if path[len(path)-1] in {DirSep, AltSep}: q = 2
-  for i in countdown(len(path)-q, 0):
-    if path[i] in {DirSep, AltSep}:
-      if b == 0: b = i
-      else:
-        let x = path.substr(i+1, b-1)
-        case x.normalize
-        of "lib", "src", "source", "package", "pckg", "library", "private":
-          b = i
-        else:
-          return x.replace('.', '_')
-  result = ""
+  var parents = 0
+  block packageSearch:
+    for d in myParentDirs(path):
+      if packageCache.hasKey(d):
+        #echo "from cache ", d, " |", packageCache[d], "|", path.splitFile.name
+        return packageCache[d]
+      inc parents
+      for file in walkFiles(d / "*.nimble"):
+        result = file.splitFile.name
+        break packageSearch
+      for file in walkFiles(d / "*.babel"):
+        result = file.splitFile.name
+        break packageSearch
+  # we also store if we didn't find anything:
+  if result.isNil: result = ""
+  for d in myParentDirs(path):
+    #echo "set cache ", d, " |", result, "|", parents
+    packageCache[d] = result
+    dec parents
+    if parents <= 0: break
 
 proc withPackageName*(path: string): string =
   let x = path.getPackageName
@@ -240,6 +267,28 @@ proc toGeneratedFile*(path, ext: string): string =
   result = joinPath([getGeneratedPath(), changeFileExt(tail, ext)])
   #echo "toGeneratedFile(", path, ", ", ext, ") = ", result
 
+when noTimeMachine:
+  var alreadyExcludedDirs = initSet[string]()
+  proc excludeDirFromTimeMachine(dir: string) {.raises: [].} =
+    ## Calls a macosx command on the directory to exclude it from backups.
+    ##
+    ## The macosx tmutil command is invoked to mark the specified path as an
+    ## item to be excluded from time machine backups. If a path already exists
+    ## with files before excluding it, newer files won't be added to the
+    ## directory, but previous files won't be removed from the backup until the
+    ## user deletes that directory.
+    ##
+    ## The whole proc is optional and will ignore all kinds of errors. The only
+    ## way to be sure that it works is to call ``tmutil isexcluded path``.
+    if alreadyExcludedDirs.contains(dir): return
+    alreadyExcludedDirs.incl(dir)
+    try:
+      var p = startProcess("/usr/bin/tmutil", args = ["addexclusion", dir])
+      discard p.waitForExit
+      p.close
+    except E_Base, EOS:
+      discard
+
 proc completeGeneratedFilePath*(f: string, createSubDir: bool = true): string = 
   var (head, tail) = splitPath(f)
   #if len(head) > 0: head = removeTrailingDirSep(shortenDir(head & dirSep))
@@ -247,7 +296,9 @@ proc completeGeneratedFilePath*(f: string, createSubDir: bool = true): string =
   if createSubDir:
     try: 
       createDir(subdir)
-    except EOS: 
+      when noTimeMachine:
+       excludeDirFromTimeMachine(subdir)
+    except OSError: 
       writeln(stdout, "cannot create directory: " & subdir)
       quit(1)
   result = joinPath(subdir, tail)
@@ -287,6 +338,16 @@ proc findFile*(f: string): string {.procvar.} =
 
 proc findModule*(modulename, currentModule: string): string =
   # returns path to module
+  when defined(nimfix):
+    # '.nimfix' modules are preferred over '.nim' modules so that specialized
+    # versions can be kept for 'nimfix'.
+    block:
+      let m = addFileExt(modulename, "nimfix")
+      let currentPath = currentModule.splitFile.dir
+      result = currentPath / m
+      if not existsFile(result):
+        result = findFile(m)
+        if existsFile(result): return result
   let m = addFileExt(modulename, NimExt)
   let currentPath = currentModule.splitFile.dir
   result = currentPath / m

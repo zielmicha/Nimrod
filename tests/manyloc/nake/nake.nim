@@ -58,7 +58,7 @@ when isMainModule:
   for i in 1..paramCount():
     args.add paramStr(i)
     args.add " "
-  quit(shell("nimrod", "c", "-r", "nakefile.nim", args))
+  quit(shell("nim", "c", "-r", "nakefile.nim", args))
 else:
   addQuitProc(proc() {.noconv.} =
     var 
@@ -74,7 +74,7 @@ else:
           echo "Unknown option: ", key, ": ", val
       of cmdArgument:
         task = key
-      else: nil
+      else: discard
     if printTaskList or task.isNil or not(tasks.hasKey(task)):
       echo "Available tasks:"
       for name, task in pairs(tasks):

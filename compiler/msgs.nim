@@ -1,6 +1,6 @@
 #
 #
-#           The Nimrod Compiler
+#           The Nim Compiler
 #        (c) Copyright 2013 Andreas Rumpf
 #
 #    See the file "copying.txt", included in this
@@ -67,7 +67,7 @@ type
     errAmbiguousCallXYZ, errWrongNumberOfArguments, 
     errXCannotBePassedToProcVar, 
     errXCannotBeInParamDecl, errPragmaOnlyInHeaderOfProc, errImplOfXNotAllowed, 
-    errImplOfXexpected, errNoSymbolToBorrowFromFound, errDiscardValue, 
+    errImplOfXexpected, errNoSymbolToBorrowFromFound, errDiscardValueX, 
     errInvalidDiscard, errIllegalConvFromXtoY, errCannotBindXTwice, 
     errInvalidOrderInArrayConstructor,
     errInvalidOrderInEnumX, errEnumXHasHoles, errExceptExpected, errInvalidTry, 
@@ -88,14 +88,16 @@ type
     errTemplateInstantiationTooNested, errInstantiationFrom, 
     errInvalidIndexValueForTuple, errCommandExpectsFilename,
     errMainModuleMustBeSpecified,
-    errXExpected, 
+    errXExpected,
+    errTIsNotAConcreteType,
     errInvalidSectionStart, errGridTableNotImplemented, errGeneralParseError, 
     errNewSectionExpected, errWhitespaceExpected, errXisNoValidIndexFile, 
     errCannotRenderX, errVarVarTypeNotAllowed, errInstantiateXExplicitely,
     errOnlyACallOpCanBeDelegator, errUsingNoSymbol,
+    errMacroBodyDependsOnGenericTypes,
     errDestructorNotGenericEnough,
-    
-    errXExpectsTwoArguments, 
+    errInlineIteratorsAsProcParams,
+    errXExpectsTwoArguments,
     errXExpectsObjectTypes, errXcanNeverBeOfThisSubtype, errTooManyIterations, 
     errCannotInterpretNodeX, errFieldXNotFound, errInvalidConversionFromTypeX, 
     errAssertionFailed, errCannotGenerateCodeForX, errXRequiresOneArgument, 
@@ -103,22 +105,27 @@ type
     errXhasSideEffects, errIteratorExpected, errLetNeedsInit,
     errThreadvarCannotInit, errWrongSymbolX, errIllegalCaptureX,
     errXCannotBeClosure, errXMustBeCompileTime,
+    errCannotInferTypeOfTheLiteral,
+    errCannotInferReturnType,
+    errGenericLambdaNotAllowed,
+    errCompilerDoesntSupportTarget,
     errUser,
     warnCannotOpenFile, 
     warnOctalEscape, warnXIsNeverRead, warnXmightNotBeenInit, 
     warnDeprecated, warnConfigDeprecated,
     warnSmallLshouldNotBeUsed, warnUnknownMagic, warnRedefinitionOfLabel, 
-    warnUnknownSubstitutionX, warnLanguageXNotSupported, warnCommentXIgnored, 
+    warnUnknownSubstitutionX, warnLanguageXNotSupported,
+    warnFieldXNotSupported, warnCommentXIgnored, 
     warnNilStatement, warnAnalysisLoophole,
-    warnDifferentHeaps, warnWriteToForeignHeap, warnImplicitClosure,
+    warnDifferentHeaps, warnWriteToForeignHeap, warnUnsafeCode,
     warnEachIdentIsTuple, warnShadowIdent, 
-    warnProveInit, warnProveField, warnProveIndex,
-    warnUninit, warnGcMem, warnUser,
+    warnProveInit, warnProveField, warnProveIndex, warnGcUnsafe, warnGcUnsafe2,
+    warnUninit, warnGcMem, warnLockLevel, warnUser,
     hintSuccess, hintSuccessX,
     hintLineTooLong, hintXDeclaredButNotUsed, hintConvToBaseNotNeeded,
     hintConvFromXtoItselfNotNeeded, hintExprAlwaysX, hintQuitCalled,
     hintProcessing, hintCodeBegin, hintCodeEnd, hintConf, hintPath,
-    hintConditionAlwaysTrue, hintPattern,
+    hintConditionAlwaysTrue, hintName, hintPattern,
     hintUser
 
 const 
@@ -164,7 +171,7 @@ const
     errInvalidNumberOfYieldExpr: "invalid number of \'yield\' expressions", 
     errCannotReturnExpr: "current routine cannot return an expression", 
     errAttemptToRedefine: "redefinition of \'$1\'", 
-    errStmtInvalidAfterReturn: "statement not allowed after \'return\', \'break\' or \'raise\'", 
+    errStmtInvalidAfterReturn: "statement not allowed after \'return\', \'break\', \'raise\' or \'continue'", 
     errStmtExpected: "statement expected", 
     errInvalidLabel: "\'$1\' is no label", 
     errInvalidCmdLineOption: "invalid command line option: \'$1\'", 
@@ -196,7 +203,7 @@ const
     errXExpectsArrayType: "\'$1\' expects an array type", 
     errIteratorCannotBeInstantiated: "'$1' cannot be instantiated because its body has not been compiled yet", 
     errExprXAmbiguous: "expression '$1' ambiguous in this context", 
-    errConstantDivisionByZero: "constant division by zero", 
+    errConstantDivisionByZero: "division by zero", 
     errOrdinalTypeExpected: "ordinal type expected", 
     errOrdinalOrFloatTypeExpected: "ordinal or float type expected", 
     errOverOrUnderflow: "over- or underflow", 
@@ -263,7 +270,7 @@ const
     errImplOfXNotAllowed: "implementation of \'$1\' is not allowed", 
     errImplOfXexpected: "implementation of \'$1\' expected", 
     errNoSymbolToBorrowFromFound: "no symbol to borrow from found", 
-    errDiscardValue: "value returned by statement has to be discarded", 
+    errDiscardValueX: "value of type '$1' has to be discarded", 
     errInvalidDiscard: "statement returns no value that can be discarded", 
     errIllegalConvFromXtoY: "conversion from $1 to $2 is invalid",
     errCannotBindXTwice: "cannot bind parameter \'$1\' twice", 
@@ -312,6 +319,7 @@ const
     errCommandExpectsFilename: "command expects a filename argument",
     errMainModuleMustBeSpecified: "please, specify a main module in the project configuration file",
     errXExpected: "\'$1\' expected", 
+    errTIsNotAConcreteType: "\'$1\' is not a concrete type.",
     errInvalidSectionStart: "invalid section start",
     errGridTableNotImplemented: "grid table is not implemented", 
     errGeneralParseError: "general parse error",
@@ -323,8 +331,12 @@ const
     errInstantiateXExplicitely: "instantiate '$1' explicitely",
     errOnlyACallOpCanBeDelegator: "only a call operator can be a delegator",
     errUsingNoSymbol: "'$1' is not a variable, constant or a proc name",
+    errMacroBodyDependsOnGenericTypes: "the macro body cannot be compiled, " &
+                                       "because the parameter '$1' has a generic type",
     errDestructorNotGenericEnough: "Destructor signarue is too specific. " &
                                    "A destructor must be associated will all instantiations of a generic type",
+    errInlineIteratorsAsProcParams: "inline iterators can be used as parameters only for " &
+                                    "templates, macros and other inline iterators",
     errXExpectsTwoArguments: "\'$1\' expects two arguments", 
     errXExpectsObjectTypes: "\'$1\' expects object types",
     errXcanNeverBeOfThisSubtype: "\'$1\' can never be of this subtype", 
@@ -346,31 +358,41 @@ const
     errIllegalCaptureX: "illegal capture '$1'",
     errXCannotBeClosure: "'$1' cannot have 'closure' calling convention",
     errXMustBeCompileTime: "'$1' can only be used in compile-time context",
+    errCannotInferTypeOfTheLiteral: "cannot infer the type of the $1",
+    errCannotInferReturnType: "cannot infer the return type of the proc",
+    errGenericLambdaNotAllowed: "A nested proc can have generic parameters only when " &
+                                "it is used as an operand to another routine and the types " &
+                                "of the generic paramers can be infered from the expected signature.",
+    errCompilerDoesntSupportTarget: "The current compiler \'$1\' doesn't support the requested compilation target",
     errUser: "$1", 
     warnCannotOpenFile: "cannot open \'$1\' [CannotOpenFile]",
     warnOctalEscape: "octal escape sequences do not exist; leading zero is ignored [OctalEscape]", 
     warnXIsNeverRead: "\'$1\' is never read [XIsNeverRead]", 
     warnXmightNotBeenInit: "\'$1\' might not have been initialized [XmightNotBeenInit]", 
-    warnDeprecated: "\'$1\' is deprecated [Deprecated]", 
+    warnDeprecated: "$1 is deprecated [Deprecated]", 
     warnConfigDeprecated: "config file '$1' is deprecated [ConfigDeprecated]",
     warnSmallLshouldNotBeUsed: "\'l\' should not be used as an identifier; may look like \'1\' (one) [SmallLshouldNotBeUsed]", 
     warnUnknownMagic: "unknown magic \'$1\' might crash the compiler [UnknownMagic]", 
     warnRedefinitionOfLabel: "redefinition of label \'$1\' [RedefinitionOfLabel]", 
     warnUnknownSubstitutionX: "unknown substitution \'$1\' [UnknownSubstitutionX]", 
     warnLanguageXNotSupported: "language \'$1\' not supported [LanguageXNotSupported]", 
+    warnFieldXNotSupported: "field \'$1\' not supported [FieldXNotSupported]", 
     warnCommentXIgnored: "comment \'$1\' ignored [CommentXIgnored]", 
     warnNilStatement: "'nil' statement is deprecated; use an empty 'discard' statement instead [NilStmt]", 
     warnAnalysisLoophole: "thread analysis incomplete due to unknown call '$1' [AnalysisLoophole]",
     warnDifferentHeaps: "possible inconsistency of thread local heaps [DifferentHeaps]",
     warnWriteToForeignHeap: "write to foreign heap [WriteToForeignHeap]",
-    warnImplicitClosure: "implicit closure convention: '$1' [ImplicitClosure]",
+    warnUnsafeCode: "unsafe code: '$1' [UnsafeCode]",
     warnEachIdentIsTuple: "each identifier is a tuple [EachIdentIsTuple]",
     warnShadowIdent: "shadowed identifier: '$1' [ShadowIdent]",
     warnProveInit: "Cannot prove that '$1' is initialized. This will become a compile time error in the future. [ProveInit]",
     warnProveField: "cannot prove that field '$1' is accessible [ProveField]",
     warnProveIndex: "cannot prove index '$1' is valid [ProveIndex]",
+    warnGcUnsafe: "not GC-safe: '$1' [GcUnsafe]",
+    warnGcUnsafe2: "cannot prove '$1' is GC-safe. Does not compile with --threads:on.",
     warnUninit: "'$1' might not have been initialized [Uninit]",
     warnGcMem: "'$1' uses GC'ed memory [GcMem]",
+    warnLockLevel: "$1 [LockLevel]",
     warnUser: "$1 [User]", 
     hintSuccess: "operation successful [Success]", 
     hintSuccessX: "operation successful ($# lines compiled; $# sec total; $#) [SuccessX]", 
@@ -386,24 +408,27 @@ const
     hintConf: "used config file \'$1\' [Conf]", 
     hintPath: "added path: '$1' [Path]",
     hintConditionAlwaysTrue: "condition is always true: '$1' [CondTrue]",
+    hintName: "name should be: '$1' [Name]",
     hintPattern: "$1 [Pattern]",
     hintUser: "$1 [User]"]
 
 const
-  WarningsToStr*: array[0..24, string] = ["CannotOpenFile", "OctalEscape", 
+  WarningsToStr*: array[0..28, string] = ["CannotOpenFile", "OctalEscape", 
     "XIsNeverRead", "XmightNotBeenInit",
     "Deprecated", "ConfigDeprecated",
     "SmallLshouldNotBeUsed", "UnknownMagic", 
-    "RedefinitionOfLabel", "UnknownSubstitutionX", "LanguageXNotSupported", 
+    "RedefinitionOfLabel", "UnknownSubstitutionX",
+    "LanguageXNotSupported", "FieldXNotSupported",
     "CommentXIgnored", "NilStmt",
     "AnalysisLoophole", "DifferentHeaps", "WriteToForeignHeap",
-    "ImplicitClosure", "EachIdentIsTuple", "ShadowIdent", 
-    "ProveInit", "ProveField", "ProveIndex", "Uninit", "GcMem", "User"]
+    "UnsafeCode", "EachIdentIsTuple", "ShadowIdent", 
+    "ProveInit", "ProveField", "ProveIndex", "GcUnsafe", "GcUnsafe2", "Uninit",
+    "GcMem", "LockLevel", "User"]
 
-  HintsToStr*: array[0..15, string] = ["Success", "SuccessX", "LineTooLong", 
+  HintsToStr*: array[0..16, string] = ["Success", "SuccessX", "LineTooLong", 
     "XDeclaredButNotUsed", "ConvToBaseNotNeeded", "ConvFromXtoItselfNotNeeded", 
     "ExprAlwaysX", "QuitCalled", "Processing", "CodeBegin", "CodeEnd", "Conf", 
-    "Path", "CondTrue", "Pattern",
+    "Path", "CondTrue", "Name", "Pattern",
     "User"]
 
 const 
@@ -421,11 +446,11 @@ type
   TNoteKinds* = set[TNoteKind]
 
   TFileInfo*{.final.} = object 
-    fullPath*: string          # This is a canonical full filesystem path
+    fullPath: string           # This is a canonical full filesystem path
     projPath*: string          # This is relative to the project's root
     shortName*: string         # short name of the module
     quotedName*: PRope         # cached quoted short name for codegen
-                               # purpoes
+                               # purposes
     
     lines*: seq[PRope]         # the source code of the module
                                #   used for better error messages and
@@ -448,8 +473,8 @@ type
 
   TErrorOutputs* = set[TErrorOutput]
 
-  ERecoverableError* = object of EInvalidValue
-  ESuggestDone* = object of E_Base
+  ERecoverableError* = object of ValueError
+  ESuggestDone* = object of Exception
 
 const
   InvalidFileIDX* = int32(-1)
@@ -540,14 +565,14 @@ proc sourceLine*(i: TLineInfo): PRope
 var
   gNotes*: TNoteKinds = {low(TNoteKind)..high(TNoteKind)} - 
                         {warnShadowIdent, warnUninit,
-                         warnProveField, warnProveIndex}
+                         warnProveField, warnProveIndex, warnGcUnsafe}
   gErrorCounter*: int = 0     # counts the number of errors
   gHintCounter*: int = 0
   gWarnCounter*: int = 0
   gErrorMax*: int = 1         # stop after gErrorMax errors
 
 when useCaas:
-  var stdoutSocket*: TSocket
+  var stdoutSocket*: Socket
 
 proc unknownLineInfo*(): TLineInfo =
   result.line = int16(-1)
@@ -647,7 +672,7 @@ proc toFileLine*(info: TLineInfo): string {.inline.} =
 proc toFileLineCol*(info: TLineInfo): string {.inline.} =
   result = info.toFilename & "(" & $info.line & "," & $info.col & ")"
 
-template `$`*(info: TLineInfo): expr = toFileLineCol(info)
+proc `$`*(info: TLineInfo): string = toFileLineCol(info)
 
 proc `??`* (info: TLineInfo, filename: string): bool =
   # only for debugging purposes
@@ -710,19 +735,19 @@ proc handleError(msg: TMsgKind, eh: TErrorHandling, s: string) =
       writeStackTrace()
     quit 1
 
-  if msg >= fatalMin and msg <= fatalMax: 
+  if msg >= fatalMin and msg <= fatalMax:
     quit()
-  if msg >= errMin and msg <= errMax: 
+  if msg >= errMin and msg <= errMax:
     inc(gErrorCounter)
     options.gExitcode = 1'i8
-    if gErrorCounter >= gErrorMax: 
+    if gErrorCounter >= gErrorMax:
       quit()
     elif eh == doAbort and gCmd != cmdIdeTools:
       quit()
     elif eh == doRaise:
       raiseRecoverableError(s)
 
-proc `==`*(a, b: TLineInfo): bool = 
+proc `==`*(a, b: TLineInfo): bool =
   result = a.line == b.line and a.fileIndex == b.fileIndex
 
 proc writeContext(lastinfo: TLineInfo) = 
@@ -763,6 +788,14 @@ proc writeSurroundingSrc(info: TLineInfo) =
   const indent = "  "
   msgWriteln(indent & info.sourceLine.ropeToStr)
   msgWriteln(indent & repeatChar(info.col, ' ') & '^')
+
+proc formatMsg*(info: TLineInfo, msg: TMsgKind, arg: string): string =
+  let frmt = case msg
+             of warnMin..warnMax: PosWarningFormat
+             of hintMin..hintMax: PosHintFormat
+             else: PosErrorFormat
+  result = frmt % [toMsgFilename(info), coordToStr(info.line),
+                   coordToStr(info.col), getMessageStr(msg, arg)]
 
 proc liMessage(info: TLineInfo, msg: TMsgKind, arg: string, 
                eh: TErrorHandling) =
@@ -838,7 +871,7 @@ proc sourceLine*(i: TLineInfo): PRope =
     try:
       for line in lines(i.toFullPath):
         addSourceLine i.fileIndex, line.string
-    except EIO:
+    except IOError:
       discard
   internalAssert i.fileIndex < fileInfos.len
   # can happen if the error points to EOF:

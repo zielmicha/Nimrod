@@ -1,34 +1,43 @@
 #
 #
-#            Nimrod's Runtime Library
-#        (c) Copyright 2012 Andreas Rumpf
+#            Nim's Runtime Library
+#        (c) Copyright 2015 Andreas Rumpf
 #
 #    See the file "copying.txt", included in this
 #    distribution, for details about the copyright.
 #
 
-## Atomic operations for Nimrod.
+# Atomic operations for Nim.
+{.push stackTrace:off.}
 
-when (defined(gcc) or defined(llvm_gcc)) and hasThreadSupport:
-  type 
-    AtomMemModel* = enum
-      ATOMIC_RELAXED,  ## No barriers or synchronization. 
-      ATOMIC_CONSUME,  ## Data dependency only for both barrier and
-                       ## synchronization with another thread.
-      ATOMIC_ACQUIRE,  ## Barrier to hoisting of code and synchronizes with
-                       ## release (or stronger) 
-                       ## semantic stores from another thread.
-      ATOMIC_RELEASE,  ## Barrier to sinking of code and synchronizes with
-                       ## acquire (or stronger) 
-                       ## semantic loads from another thread. 
-      ATOMIC_ACQ_REL,  ## Full barrier in both directions and synchronizes
-                       ## with acquire loads 
-                       ## and release stores in another thread.
-      ATOMIC_SEQ_CST   ## Full barrier in both directions and synchronizes
-                       ## with acquire loads 
-                       ## and release stores in all threads.
+const someGcc = defined(gcc) or defined(llvm_gcc) or defined(clang)
 
-    TAtomType* = TNumber|pointer|ptr|char
+when someGcc and hasThreadSupport:
+  type AtomMemModel* = distinct cint
+  var ATOMIC_RELAXED* {.importc: "__ATOMIC_RELAXED", nodecl.}: AtomMemModel
+    ## No barriers or synchronization.
+  var ATOMIC_CONSUME* {.importc: "__ATOMIC_CONSUME", nodecl.}: AtomMemModel
+    ## Data dependency only for both barrier and
+    ## synchronization with another thread.
+  var ATOMIC_ACQUIRE* {.importc: "__ATOMIC_ACQUIRE", nodecl.}: AtomMemModel
+    ## Barrier to hoisting of code and synchronizes with
+    ## release (or stronger) 
+    ## semantic stores from another thread.
+  var ATOMIC_RELEASE* {.importc: "__ATOMIC_RELEASE", nodecl.}: AtomMemModel
+    ## Barrier to sinking of code and synchronizes with
+    ## acquire (or stronger) 
+    ## semantic loads from another thread. 
+  var ATOMIC_ACQ_REL* {.importc: "__ATOMIC_ACQ_REL", nodecl.}: AtomMemModel
+    ## Full barrier in both directions and synchronizes
+    ## with acquire loads 
+    ## and release stores in another thread.
+  var ATOMIC_SEQ_CST* {.importc: "__ATOMIC_SEQ_CST", nodecl.}: AtomMemModel
+    ## Full barrier in both directions and synchronizes
+    ## with acquire loads 
+    ## and release stores in all threads.
+
+  type
+    TAtomType* = SomeNumber|pointer|ptr|char|bool
       ## Type Class representing valid types for use with atomic procs
 
   proc atomicLoadN*[T: TAtomType](p: ptr T, mem: AtomMemModel): T {.
@@ -152,54 +161,64 @@ when (defined(gcc) or defined(llvm_gcc)) and hasThreadSupport:
     ## A value of 0 indicates typical alignment should be used. The compiler may also 
     ## ignore this parameter.
 
+  template fence*() = atomicThreadFence(ATOMIC_SEQ_CST)
 elif defined(vcc) and hasThreadSupport:
   proc addAndFetch*(p: ptr int, val: int): int {.
     importc: "NimXadd", nodecl.}
+  proc fence*() {.importc: "_ReadWriteBarrier", header: "<intrin.h>".}
+
 else:
   proc addAndFetch*(p: ptr int, val: int): int {.inline.} =
     inc(p[], val)
     result = p[]
 
-# atomic compare and swap (CAS) funcitons to implement lock-free algorithms  
-      
-#if defined(windows) and not defined(gcc) and hasThreadSupport:
-#    proc InterlockedCompareExchangePointer(mem: ptr pointer,
-#      newValue: pointer, comparand: pointer) : pointer {.nodecl, 
-#        importc: "InterlockedCompareExchangePointer", header:"windows.h".}
-
-#    proc compareAndSwap*[T](mem: ptr T, 
-#      expected: T, newValue: T): bool {.inline.}=
-#      ## Returns true if successfully set value at mem to newValue when value
-#      ## at mem == expected
-#      return InterlockedCompareExchangePointer(addr(mem), 
-#        addr(newValue), addr(expected))[] == expected
-    
-#elif not hasThreadSupport:
-#  proc compareAndSwap*[T](mem: ptr T, 
-#                          expected: T, newValue: T): bool {.inline.} =
-#      ## Returns true if successfully set value at mem to newValue when value
-#      ## at mem == expected
-#      var oldval = mem[]
-#      if oldval == expected:
-#        mem[] = newValue
-#        return true
-#      return false
-
-
-# Some convenient functions 
 proc atomicInc*(memLoc: var int, x: int = 1): int =
-  when defined(gcc) and hasThreadSupport:
+  when someGcc and hasThreadSupport:
     result = atomic_add_fetch(memLoc.addr, x, ATOMIC_RELAXED)
   else:
     inc(memLoc, x)
     result = memLoc
   
 proc atomicDec*(memLoc: var int, x: int = 1): int =
-  when defined(gcc) and hasThreadSupport:
-    when defined(atomic_sub_fetch):
+  when someGcc and hasThreadSupport:
+    when declared(atomic_sub_fetch):
       result = atomic_sub_fetch(memLoc.addr, x, ATOMIC_RELAXED)
     else:
       result = atomic_add_fetch(memLoc.addr, -x, ATOMIC_RELAXED)
   else:
     dec(memLoc, x)
     result = memLoc
+
+when defined(windows) and not someGcc:
+  proc interlockedCompareExchange(p: pointer; exchange, comparand: int32): int32
+    {.importc: "InterlockedCompareExchange", header: "<windows.h>", cdecl.}
+
+  proc cas*[T: bool|int|ptr](p: ptr T; oldValue, newValue: T): bool =
+    interlockedCompareExchange(p, newValue.int32, oldValue.int32) != 0
+  # XXX fix for 64 bit build
+else:
+  # this is valid for GCC and Intel C++
+  proc cas*[T: bool|int|ptr](p: ptr T; oldValue, newValue: T): bool
+    {.importc: "__sync_bool_compare_and_swap", nodecl.}
+  # XXX is this valid for 'int'?
+
+
+when (defined(x86) or defined(amd64)) and someGcc:
+  proc cpuRelax* {.inline.} =
+    {.emit: """asm volatile("pause" ::: "memory");""".}
+elif (defined(x86) or defined(amd64)) and defined(vcc):
+  proc cpuRelax* {.importc: "YieldProcessor", header: "<windows.h>".}
+elif defined(icl):
+  proc cpuRelax* {.importc: "_mm_pause", header: "xmmintrin.h".}
+elif false:
+  from os import sleep
+
+  proc cpuRelax* {.inline.} = os.sleep(1)
+
+when not declared(fence) and hasThreadSupport:
+  # XXX fixme
+  proc fence*() {.inline.} =
+    var dummy: bool
+    discard cas(addr dummy, false, true)
+
+{.pop.}

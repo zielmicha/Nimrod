@@ -1,6 +1,6 @@
 #
 #
-#            Nimrod's Runtime Library
+#            Nim's Runtime Library
 #        (c) Copyright 2013 Andreas Rumpf
 #
 #    See the file "copying.txt", included in this
@@ -18,6 +18,8 @@ type
     when trackAllocationSource:
       filename: cstring
       line: int
+    when useCellIds:
+      id: int
 
   PCell = ptr TCell
 
@@ -25,7 +27,7 @@ type
   TBitIndex = range[0..UnitsPerPage-1]
   TPageDesc {.final, pure.} = object
     next: PPageDesc # all nodes are connected with this pointer
-    key: TAddress   # start address at bit 0
+    key: ByteAddress   # start address at bit 0
     bits: array[TBitIndex, int] # a bit vector
 
   PPageDescArray = ptr array[0..1000_000, PPageDesc]
@@ -96,7 +98,7 @@ proc nextTry(h, maxHash: int): int {.inline.} =
   # generates each int in range(maxHash) exactly once (see any text on
   # random-number generation for proof).
   
-proc cellSetGet(t: TCellSet, key: TAddress): PPageDesc =
+proc cellSetGet(t: TCellSet, key: ByteAddress): PPageDesc =
   var h = cast[int](key) and t.max
   while t.data[h] != nil:
     if t.data[h].key == key: return t.data[h]
@@ -121,7 +123,7 @@ proc cellSetEnlarge(t: var TCellSet) =
   dealloc(t.data)
   t.data = n
 
-proc cellSetPut(t: var TCellSet, key: TAddress): PPageDesc =
+proc cellSetPut(t: var TCellSet, key: ByteAddress): PPageDesc =
   var h = cast[int](key) and t.max
   while true:
     var x = t.data[h]
@@ -145,7 +147,7 @@ proc cellSetPut(t: var TCellSet, key: TAddress): PPageDesc =
 # ---------- slightly higher level procs --------------------------------------
 
 proc contains(s: TCellSet, cell: PCell): bool =
-  var u = cast[TAddress](cell)
+  var u = cast[ByteAddress](cell)
   var t = cellSetGet(s, u shr PageShift)
   if t != nil:
     u = (u %% PageSize) /% MemAlign
@@ -154,13 +156,13 @@ proc contains(s: TCellSet, cell: PCell): bool =
     result = false
 
 proc incl(s: var TCellSet, cell: PCell) {.noinline.} =
-  var u = cast[TAddress](cell)
+  var u = cast[ByteAddress](cell)
   var t = cellSetPut(s, u shr PageShift)
   u = (u %% PageSize) /% MemAlign
   t.bits[u shr IntShift] = t.bits[u shr IntShift] or (1 shl (u and IntMask))
 
 proc excl(s: var TCellSet, cell: PCell) =
-  var u = cast[TAddress](cell)
+  var u = cast[ByteAddress](cell)
   var t = cellSetGet(s, u shr PageShift)
   if t != nil:
     u = (u %% PageSize) /% MemAlign
@@ -168,7 +170,7 @@ proc excl(s: var TCellSet, cell: PCell) =
                               not (1 shl (u and IntMask)))
 
 proc containsOrIncl(s: var TCellSet, cell: PCell): bool = 
-  var u = cast[TAddress](cell)
+  var u = cast[ByteAddress](cell)
   var t = cellSetGet(s, u shr PageShift)
   if t != nil:
     u = (u %% PageSize) /% MemAlign

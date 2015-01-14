@@ -1,6 +1,8 @@
 discard """
   outputsub: "101"
-  cmd: "nimrod cc --hints:on --threads:on $# $#"
+  errormsg: "'threadFunc' is not GC-safe"
+  line: 39
+  cmd: "nim $target --hints:on --threads:on $options $file"
 """
 
 import os
@@ -8,7 +10,7 @@ import os
 var
   thr: array [0..5, TThread[tuple[a, b: int]]]
 
-proc doNothing() = nil
+proc doNothing() = discard
 
 type
   PNode = ref TNode

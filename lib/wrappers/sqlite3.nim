@@ -1,6 +1,6 @@
 #
 #
-#            Nimrod's Runtime Library
+#            Nim's Runtime Library
 #        (c) Copyright 2012 Andreas Rumpf
 #
 #    See the file "copying.txt", included in this
@@ -88,8 +88,9 @@ const
   SQLITE_REINDEX* = 27
   SQLITE_DENY* = 1
   SQLITE_IGNORE* = 2          # Original from sqlite3.h: 
-                              ##define SQLITE_STATIC      ((void(*)(void *))0)
-                              ##define SQLITE_TRANSIENT   ((void(*)(void *))-1)
+                              #define SQLITE_STATIC      ((void(*)(void *))0)
+                              #define SQLITE_TRANSIENT   ((void(*)(void *))-1)
+  SQLITE_DETERMINISTIC* = 0x800
 
 const 
   SQLITE_STATIC* = nil
@@ -105,15 +106,15 @@ type
   Pstmt* = ptr Tstmt
   Tvalue{.pure, final.} = object 
   Pvalue* = ptr Tvalue
-  PPValue* = ptr Pvalue 
+  PValueArg* = array[0..127, Pvalue]
   
   Tcallback* = proc (para1: pointer, para2: int32, para3, 
                      para4: cstringArray): int32{.cdecl.}
   Tbind_destructor_func* = proc (para1: pointer){.cdecl.}
   Tcreate_function_step_func* = proc (para1: Pcontext, para2: int32, 
-                                      para3: PPValue){.cdecl.}
+                                      para3: PValueArg){.cdecl.}
   Tcreate_function_func_func* = proc (para1: Pcontext, para2: int32, 
-                                      para3: PPValue){.cdecl.}
+                                      para3: PValueArg){.cdecl.}
   Tcreate_function_final_func* = proc (para1: Pcontext){.cdecl.}
   Tresult_func* = proc (para1: pointer){.cdecl.}
   Tcreate_collation_func* = proc (para1: pointer, para2: int32, para3: pointer, 
@@ -177,15 +178,15 @@ proc errcode*(db: PSqlite3): int32{.cdecl, dynlib: Lib, importc: "sqlite3_errcod
 proc errmsg*(para1: PSqlite3): cstring{.cdecl, dynlib: Lib, importc: "sqlite3_errmsg".}
 proc errmsg16*(para1: PSqlite3): pointer{.cdecl, dynlib: Lib, 
                                    importc: "sqlite3_errmsg16".}
-proc prepare*(db: PSqlite3, zSql: cstring, nBytes: int32, ppStmt: var PStmt, 
+proc prepare*(db: PSqlite3, zSql: cstring, nBytes: int32, ppStmt: var Pstmt, 
               pzTail: ptr cstring): int32{.cdecl, dynlib: Lib, 
     importc: "sqlite3_prepare".}
     
-proc prepare_v2*(db: PSqlite3, zSql: cstring, nByte: cint, ppStmt: var PStmt,
+proc prepare_v2*(db: PSqlite3, zSql: cstring, nByte: cint, ppStmt: var Pstmt,
                 pzTail: ptr cstring): cint {.
                 importc: "sqlite3_prepare_v2", cdecl, dynlib: Lib.}
     
-proc prepare16*(db: PSqlite3, zSql: pointer, nBytes: int32, ppStmt: var PStmt, 
+proc prepare16*(db: PSqlite3, zSql: pointer, nBytes: int32, ppStmt: var Pstmt, 
                 pzTail: var pointer): int32{.cdecl, dynlib: Lib, 
     importc: "sqlite3_prepare16".}
 proc bind_blob*(para1: Pstmt, para2: int32, para3: pointer, n: int32, 

@@ -1,6 +1,6 @@
 #
 #
-#            Nimrod's Runtime Library
+#            Nim's Runtime Library
 #        (c) Copyright 2013 Andreas Rumpf
 #
 #    See the file "copying.txt", included in this
@@ -11,7 +11,7 @@
 # with the application. Mostly we do not use dynamic memory here as that
 # would interfere with the GC and trigger ON/OFF errors if the
 # user program corrupts memory. Unfortunately, for dispaying
-# variables we use the ``system.repr()`` proc which uses Nimrod
+# variables we use the ``system.repr()`` proc which uses Nim
 # strings and thus allocates memory from the heap. Pity, but
 # I do not want to implement ``repr()`` twice.
 
@@ -79,7 +79,7 @@ proc `==`(a: TStaticStr, b: cstring): bool =
 proc write(f: TFile, s: TStaticStr) =
   write(f, cstring(s.data))
 
-proc ListBreakPoints() =
+proc listBreakPoints() =
   write(stdout, EndbBeg)
   write(stdout, "| Breakpoints:\n")
   for b in listBreakpoints():
@@ -117,7 +117,7 @@ proc writeVariable(stream: TFile, slot: TVarSlot) =
   write(stream, " = ")
   writeln(stream, dbgRepr(slot.address, slot.typ))
 
-proc ListFrame(stream: TFile, f: PFrame) =
+proc listFrame(stream: TFile, f: PFrame) =
   write(stream, EndbBeg)
   write(stream, "| Frame (")
   write(stream, f.len)
@@ -126,7 +126,7 @@ proc ListFrame(stream: TFile, f: PFrame) =
     writeln(stream, getLocal(f, i).name)
   write(stream, EndbEnd)
 
-proc ListLocals(stream: TFile, f: PFrame) =
+proc listLocals(stream: TFile, f: PFrame) =
   write(stream, EndbBeg)
   write(stream, "| Frame (")
   write(stream, f.len)
@@ -135,7 +135,7 @@ proc ListLocals(stream: TFile, f: PFrame) =
     writeVariable(stream, getLocal(f, i))
   write(stream, EndbEnd)
 
-proc ListGlobals(stream: TFile) =
+proc listGlobals(stream: TFile) =
   write(stream, EndbBeg)
   write(stream, "| Globals:\n")
   for i in 0 .. getGlobalLen()-1:
@@ -152,7 +152,7 @@ proc debugOut(msg: cstring) =
 
 proc dbgFatal(msg: cstring) =
   debugOut(msg)
-  dbgAborting = True # the debugger wants to abort
+  dbgAborting = true # the debugger wants to abort
   quit(1)
 
 proc dbgShowCurrentProc(dbgFramePointer: PFrame) =
@@ -176,10 +176,10 @@ proc scanAndAppendWord(src: cstring, a: var TStaticStr, start: int): int =
   result = start
   # skip whitespace:
   while src[result] in {'\t', ' '}: inc(result)
-  while True:
+  while true:
     case src[result]
     of 'a'..'z', '0'..'9': add(a, src[result])
-    of '_': nil # just skip it
+    of '_': discard # just skip it
     of 'A'..'Z': add(a, chr(ord(src[result]) - ord('A') + ord('a')))
     else: break
     inc(result)
@@ -203,7 +203,7 @@ proc scanNumber(src: cstring, a: var int, start: int): int =
   while true:
     case src[result]
     of '0'..'9': a = a * 10 + ord(src[result]) - ord('0')
-    of '_': nil # skip underscores (nice for long line numbers)
+    of '_': discard # skip underscores (nice for long line numbers)
     else: break
     inc(result)
 
@@ -240,7 +240,7 @@ g, globals              display available global variables
 maxdisplay <integer>    set the display's recursion maximum
 """)
 
-proc InvalidCommand() =
+proc invalidCommand() =
   debugOut("[Warning] invalid command ignored (type 'h' for help) ")
 
 proc hasExt(s: cstring): bool =
@@ -272,7 +272,7 @@ proc createBreakPoint(s: cstring, start: int) =
     if not addBreakpoint(br.filename, br.low, br.high):
       debugOut("[Warning] no breakpoint could be set; out of breakpoint space ")
 
-proc BreakpointToggle(s: cstring, start: int) =
+proc breakpointToggle(s: cstring, start: int) =
   var a = parseBreakpoint(s, start)
   if not a.filename.isNil:
     var b = checkBreakpoints(a.filename, a.low)
@@ -280,7 +280,7 @@ proc BreakpointToggle(s: cstring, start: int) =
     else: debugOut("[Warning] unknown breakpoint ")
 
 proc dbgEvaluate(stream: TFile, s: cstring, start: int, f: PFrame) =
-  var dbgTemp: tstaticstr
+  var dbgTemp: TStaticStr
   var i = scanWord(s, dbgTemp, start)
   while s[i] in {' ', '\t'}: inc(i)
   var v: TVarSlot
@@ -299,10 +299,10 @@ proc dbgEvaluate(stream: TFile, s: cstring, start: int, f: PFrame) =
         writeVariable(stream, v)  
 
 proc dbgOut(s: cstring, start: int, currFrame: PFrame) =
-  var dbgTemp: tstaticstr
+  var dbgTemp: TStaticStr
   var i = scanFilename(s, dbgTemp, start)
   if dbgTemp.len == 0:
-    InvalidCommand()
+    invalidCommand()
     return
   var stream = openAppend(dbgTemp.data)
   if stream == nil:
@@ -316,17 +316,17 @@ proc dbgStackFrame(s: cstring, start: int, currFrame: PFrame) =
   var i = scanFilename(s, dbgTemp, start)
   if dbgTemp.len == 0:
     # just write it to stdout:
-    ListFrame(stdout, currFrame)
+    listFrame(stdout, currFrame)
   else:
     var stream = openAppend(dbgTemp.data)
     if stream == nil:
       debugOut("[Warning] could not open or create file ")
       return
-    ListFrame(stream, currFrame)
+    listFrame(stream, currFrame)
     close(stream)
 
 proc readLine(f: TFile, line: var TStaticStr): bool =
-  while True:
+  while true:
     var c = fgetc(f)
     if c < 0'i32:
       if line.len > 0: break
@@ -339,7 +339,7 @@ proc readLine(f: TFile, line: var TStaticStr): bool =
     add line, chr(int(c))
   result = true
 
-proc ListFilenames() =
+proc listFilenames() =
   write(stdout, EndbBeg)
   write(stdout, "| Files:\n")
   var i = 0
@@ -352,10 +352,10 @@ proc ListFilenames() =
   write(stdout, EndbEnd)
 
 proc dbgWriteStackTrace(f: PFrame)
-proc CommandPrompt() =
+proc commandPrompt() =
   # if we return from this routine, user code executes again
   var
-    again = True
+    again = true
     dbgFramePtr = framePtr # for going down and up the stack
     dbgDown = 0 # how often we did go down
     dbgTemp: TStaticStr
@@ -390,7 +390,7 @@ proc CommandPrompt() =
       dbgHelp()
     elif ?"q" or ?"quit":
       dbgState = dbQuiting
-      dbgAborting = True
+      dbgAborting = true
       again = false
       quit(1) # BUGFIX: quit with error code > 0
     elif ?"e" or ?"eval":
@@ -402,9 +402,9 @@ proc CommandPrompt() =
     elif ?"w" or ?"where":
       dbgShowExecutionPoint()
     elif ?"l" or ?"locals":
-      ListLocals(stdout, dbgFramePtr)
+      listLocals(stdout, dbgFramePtr)
     elif ?"g" or ?"globals":
-      ListGlobals(stdout)
+      listGlobals(stdout)
     elif ?"u" or ?"up":
       if dbgDown <= 0:
         debugOut("[Warning] cannot go up any further ")
@@ -426,11 +426,11 @@ proc CommandPrompt() =
     elif ?"b" or ?"break":
       createBreakPoint(dbgUser.data, i)
     elif ?"breakpoints":
-      ListBreakPoints()
+      listBreakPoints()
     elif ?"toggle":
-      BreakpointToggle(dbgUser.data, i)
+      breakpointToggle(dbgUser.data, i)
     elif ?"filenames":
-      ListFilenames()
+      listFilenames()
     elif ?"maxdisplay":
       var parsed: int
       i = scanNumber(dbgUser.data, parsed, i)
@@ -438,15 +438,15 @@ proc CommandPrompt() =
         if parsed == 0: maxDisplayRecDepth = -1
         else: maxDisplayRecDepth = parsed
       else:
-        InvalidCommand()
-    else: InvalidCommand()
+        invalidCommand()
+    else: invalidCommand()
 
 proc endbStep() =
   # we get into here if an unhandled exception has been raised
   # XXX: do not allow the user to run the program any further?
   # XXX: BUG: the frame is lost here!
   dbgShowExecutionPoint()
-  CommandPrompt()
+  commandPrompt()
 
 proc dbgWriteStackTrace(f: PFrame) =
   const
@@ -506,25 +506,25 @@ proc checkForBreakpoint =
     write(stdout, ") ")
     write(stdout, framePtr.procname)
     write(stdout, " ***\n")
-    CommandPrompt()
+    commandPrompt()
 
 proc lineHookImpl() {.nimcall.} =
   case dbgState
   of dbStepInto:
     # we really want the command prompt here:
     dbgShowExecutionPoint()
-    CommandPrompt()
+    commandPrompt()
   of dbSkipCurrent, dbStepOver: # skip current routine
     if framePtr == dbgSkipToFrame:
       dbgShowExecutionPoint()
-      CommandPrompt()
+      commandPrompt()
     else:
       # breakpoints are wanted though (I guess)
       checkForBreakpoint()
   of dbBreakpoints:
     # debugger is only interested in breakpoints
     checkForBreakpoint()
-  else: nil
+  else: discard
 
 proc watchpointHookImpl(name: cstring) {.nimcall.} =
   dbgWriteStackTrace(framePtr)

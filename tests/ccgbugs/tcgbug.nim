@@ -19,5 +19,20 @@ var
 new(a)
 q(a)
 
+# bug #914
+when defined(windows):
+  var x = newWideCString("Hello")
+
 echo "success"
+
+
+# bug #833
+
+type
+  PFuture*[T] = ref object
+    value*: T
+    finished*: bool
+    cb: proc (future: PFuture[T]) {.closure.}
+
+var k = PFuture[void]()
 

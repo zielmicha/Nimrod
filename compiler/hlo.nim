@@ -1,6 +1,6 @@
 #
 #
-#           The Nimrod Compiler
+#           The Nim Compiler
 #        (c) Copyright 2013 Andreas Rumpf
 #
 #    See the file "copying.txt", included in this
@@ -68,7 +68,8 @@ proc hlo(c: PContext, n: PNode): PNode =
     result = n
   else:
     if n.kind in {nkFastAsgn, nkAsgn, nkIdentDefs, nkVarTuple} and
-        n.sons[0].kind == nkSym and sfGlobal in n.sons[0].sym.flags:
+        n.sons[0].kind == nkSym and 
+        {sfGlobal, sfPure} * n.sons[0].sym.flags == {sfGlobal, sfPure}:
       # do not optimize 'var g {.global} = re(...)' again!
       return n
     result = applyPatterns(c, n)

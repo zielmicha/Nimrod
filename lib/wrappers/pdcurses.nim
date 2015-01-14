@@ -554,14 +554,12 @@ template BUTTON_CHANGED*(x: expr): expr =
 template BUTTON_STATUS*(x: expr): expr = 
   (Mouse_status.button[(x) - 1])
 
-template ACS_PICK*(w, n: expr): expr = 
-  (cast[int32](w) or A_ALTCHARSET)
+template ACS_PICK*(w, n: expr): expr = int32(w) or A_ALTCHARSET
 
-template KEY_F*(n: expr): expr = 
-  (KEY_F0 + (n))
+template KEY_F*(n: expr): expr = KEY_F0 + n
 
 template COLOR_PAIR*(n: expr): expr = 
-  ((cast[cunsignedlong]((n)) shl COLOR_SHIFT) and A_COLOR)
+  ((cunsignedlong(n) shl COLOR_SHIFT) and A_COLOR)
 
 template PAIR_NUMBER*(n: expr): expr = 
   (((n) and A_COLOR) shr COLOR_SHIFT)
@@ -743,7 +741,7 @@ proc getbkgd*(a2: ptr TWINDOW): cunsignedlong{.extdecl, importc: "getbkgd",
 proc getnstr*(a2: cstring; a3: cint): cint{.extdecl, importc: "getnstr", 
     dynlib: pdcursesdll.}
 proc getstr*(a2: cstring): cint{.extdecl, importc: "getstr", dynlib: pdcursesdll.}
-proc getwin*(a2: TFile): ptr TWINDOW{.extdecl, importc: "getwin", 
+proc getwin*(a2: File): ptr TWINDOW{.extdecl, importc: "getwin", 
                                         dynlib: pdcursesdll.}
 proc halfdelay*(a2: cint): cint{.extdecl, importc: "halfdelay", 
                                  dynlib: pdcursesdll.}
@@ -897,7 +895,7 @@ proc mvwvline*(a2: ptr TWINDOW; a3: cint; a4: cint; a5: cunsignedlong; a6: cint)
 proc napms*(a2: cint): cint{.extdecl, importc: "napms", dynlib: pdcursesdll.}
 proc newpad*(a2: cint; a3: cint): ptr TWINDOW{.extdecl, importc: "newpad", 
     dynlib: pdcursesdll.}
-proc newterm*(a2: cstring; a3: TFile; a4: TFile): ptr TSCREEN{.extdecl, 
+proc newterm*(a2: cstring; a3: File; a4: File): ptr TSCREEN{.extdecl, 
     importc: "newterm", dynlib: pdcursesdll.}
 proc newwin*(a2: cint; a3: cint; a4: cint; a5: cint): ptr TWINDOW{.extdecl, 
     importc: "newwin", dynlib: pdcursesdll.}
@@ -926,7 +924,7 @@ proc prefresh*(a2: ptr TWINDOW; a3: cint; a4: cint; a5: cint; a6: cint; a7: cint
                a8: cint): cint{.extdecl, importc: "prefresh", dynlib: pdcursesdll.}
 proc printw*(a2: cstring): cint{.varargs, extdecl, importc: "printw", 
                                  dynlib: pdcursesdll.}
-proc putwin*(a2: ptr TWINDOW; a3: TFile): cint{.extdecl, importc: "putwin", 
+proc putwin*(a2: ptr TWINDOW; a3: File): cint{.extdecl, importc: "putwin", 
     dynlib: pdcursesdll.}
 proc qiflush*(){.extdecl, importc: "qiflush", dynlib: pdcursesdll.}
 proc raw*(): cint{.extdecl, importc: "raw", dynlib: pdcursesdll.}

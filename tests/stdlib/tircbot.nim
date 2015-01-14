@@ -191,7 +191,7 @@ type
 
 const
   ircServer = "irc.freenode.net"
-  joinChans = @["#nimrod"]
+  joinChans = @["#nim"]
   botNickname = "NimBot"
 
 proc setSeen(d: TDb, s: TSeen) =
@@ -200,7 +200,7 @@ proc setSeen(d: TDb, s: TSeen) =
   var hashToSet = @[("type", $s.kind.int), ("channel", s.channel),
                     ("timestamp", $s.timestamp.int)]
   case s.kind
-  of PSeenJoin: nil
+  of PSeenJoin: discard
   of PSeenPart, PSeenMsg, PSeenQuit:
     hashToSet.add(("msg", s.msg))
   of PSeenNick:
@@ -271,7 +271,7 @@ proc handleWebMessage(state: PState, line: string) =
       message.add("-" & $commit["removed"].len & "]: ")
       message.add(limitCommitMsg(commit["message"].str))
 
-      # Send message to #nimrod.
+      # Send message to #nim.
       state.ircClient.privmsg(joinChans[0], message)
   elif json.hasKey("redisinfo"):
     assert json["redisinfo"].hasKey("port")
@@ -338,7 +338,7 @@ proc hubConnect(state: PState) =
 
 proc handleIrc(irc: PAsyncIRC, event: TIRCEvent, state: PState) =
   case event.typ
-  of EvConnected: nil
+  of EvConnected: discard
   of EvDisconnected:
     while not state.ircClient.isConnected:
       try:
@@ -420,11 +420,11 @@ proc handleIrc(irc: PAsyncIRC, event: TIRCEvent, state: PState) =
       seenNick.msg = msg
       state.database.setSeen(seenNick)
     of MNick:
-      createSeen(PSeenNick, event.nick, "#nimrod")
+      createSeen(PSeenNick, event.nick, "#nim")
       seenNick.newNick = event.params[0]
       state.database.setSeen(seenNick)
     else:
-      nil # TODO: ?
+      discard # TODO: ?
 
 proc open(port: TPort = TPort(5123)): PState =
   var res: PState

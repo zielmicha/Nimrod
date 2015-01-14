@@ -1,17 +1,17 @@
 #
 #
-#            Nimrod's Runtime Library
+#            Nim's Runtime Library
 #        (c) Copyright 2012 Andreas Rumpf
 #
 #    See the file "copying.txt", included in this
 #    distribution, for details about the copyright.
 #
 
-## Thread support for Nimrod. **Note**: This is part of the system module.
+## Thread support for Nim. **Note**: This is part of the system module.
 ## Do not import it directly. To activate thread support you need to compile
 ## with the ``--threads:on`` command line switch.
 ##
-## Nimrod's memory model for threads is quite different from other common 
+## Nim's memory model for threads is quite different from other common 
 ## programming languages (C, Pascal): Each thread has its own
 ## (garbage collected) heap and sharing of memory is restricted. This helps
 ## to prevent race conditions and improves efficiency. See `the manual for
@@ -19,7 +19,7 @@
 ##
 ## Example:
 ##
-## .. code-block:: nimrod
+## .. code-block:: Nim
 ##
 ##  import locks
 ##
@@ -39,7 +39,7 @@
 ##    createThread(thr[i], threadFunc, (i*10, i*10+5))
 ##  joinThreads(thr)
   
-when not defined(NimString): 
+when not declared(NimString): 
   {.error: "You must not import this module explicitly".}
 
 const
@@ -79,12 +79,20 @@ when defined(windows):
   type
     TThreadVarSlot = distinct int32
 
-  proc threadVarAlloc(): TThreadVarSlot {.
-    importc: "TlsAlloc", stdcall, dynlib: "kernel32".}
-  proc threadVarSetValue(dwTlsIndex: TThreadVarSlot, lpTlsValue: pointer) {.
-    importc: "TlsSetValue", stdcall, dynlib: "kernel32".}
-  proc threadVarGetValue(dwTlsIndex: TThreadVarSlot): pointer {.
-    importc: "TlsGetValue", stdcall, dynlib: "kernel32".}
+  when true:
+    proc threadVarAlloc(): TThreadVarSlot {.
+      importc: "TlsAlloc", stdcall, header: "<windows.h>".}
+    proc threadVarSetValue(dwTlsIndex: TThreadVarSlot, lpTlsValue: pointer) {.
+      importc: "TlsSetValue", stdcall, header: "<windows.h>".}
+    proc threadVarGetValue(dwTlsIndex: TThreadVarSlot): pointer {.
+      importc: "TlsGetValue", stdcall, header: "<windows.h>".}
+  else:
+    proc threadVarAlloc(): TThreadVarSlot {.
+      importc: "TlsAlloc", stdcall, dynlib: "kernel32".}
+    proc threadVarSetValue(dwTlsIndex: TThreadVarSlot, lpTlsValue: pointer) {.
+      importc: "TlsSetValue", stdcall, dynlib: "kernel32".}
+    proc threadVarGetValue(dwTlsIndex: TThreadVarSlot): pointer {.
+      importc: "TlsGetValue", stdcall, dynlib: "kernel32".}
   
 else:
   {.passL: "-pthread".}
@@ -115,16 +123,6 @@ else:
 
   proc pthread_cancel(a1: TSysThread): cint {.
     importc: "pthread_cancel", header: "<pthread.h>".}
-
-  proc acquireSysTimeoutAux(L: var TSysLock, timeout: var Ttimespec): cint {.
-    importc: "pthread_mutex_timedlock", header: "<time.h>".}
-
-  proc acquireSysTimeout(L: var TSysLock, msTimeout: int) {.inline.} =
-    var a: Ttimespec
-    a.tv_sec = msTimeout div 1000
-    a.tv_nsec = (msTimeout mod 1000) * 1000
-    var res = acquireSysTimeoutAux(L, a)
-    if res != 0'i32: raise newException(EResourceExhausted, $strerror(res))
 
   type
     TThreadVarSlot {.importc: "pthread_key_t", pure, final,
@@ -184,13 +182,24 @@ type
 # XXX it'd be more efficient to not use a global variable for the 
 # thread storage slot, but to rely on the implementation to assign slot X
 # for us... ;-)
-var globalsSlot = threadVarAlloc()
+var globalsSlot: TThreadVarSlot
+
+when not defined(useNimRtl):
+  when not useStackMaskHack:
+    var mainThread: TGcThread
+
+proc initThreadVarsEmulation() {.compilerProc, inline.} =
+  when not defined(useNimRtl):
+    globalsSlot = threadVarAlloc()
+    when declared(mainThread):
+      threadVarSetValue(globalsSlot, addr(mainThread))
+
 #const globalsSlot = TThreadVarSlot(0)
 #sysAssert checkSlot.int == globalsSlot.int
 
 when emulatedThreadVars:
   proc GetThreadLocalVars(): pointer {.compilerRtl, inl.} =
-    result = addr(cast[PGcThread](ThreadVarGetValue(globalsSlot)).tls)
+    result = addr(cast[PGcThread](threadVarGetValue(globalsSlot)).tls)
 
 when useStackMaskHack:
   proc maskStackPointer(offset: int): pointer {.compilerRtl, inl.} =
@@ -202,15 +211,12 @@ when useStackMaskHack:
 # create for the main thread. Note: do not insert this data into the list
 # of all threads; it's not to be stopped etc.
 when not defined(useNimRtl):
-  
   when not useStackMaskHack:
-    var mainThread: TGcThread
-    threadVarSetValue(globalsSlot, addr(mainThread))
-    when not defined(createNimRtl): initStackBottom()
+    #when not defined(createNimRtl): initStackBottom()
     initGC()
     
   when emulatedThreadVars:
-    if NimThreadVarsSize() > sizeof(TThreadLocalStorage):
+    if nimThreadVarsSize() > sizeof(TThreadLocalStorage):
       echo "too large thread local storage size requested"
       quit 1
   
@@ -243,22 +249,22 @@ when not defined(useNimRtl):
       
     # on UNIX, the GC uses ``SIGFREEZE`` to tell every thread to stop so that
     # the GC can examine the stacks?
-    proc stopTheWord() = nil
+    proc stopTheWord() = discard
     
-# We jump through some hops here to ensure that Nimrod thread procs can have
-# the Nimrod calling convention. This is needed because thread procs are 
+# We jump through some hops here to ensure that Nim thread procs can have
+# the Nim calling convention. This is needed because thread procs are 
 # ``stdcall`` on Windows and ``noconv`` on UNIX. Alternative would be to just
 # use ``stdcall`` since it is mapped to ``noconv`` on UNIX anyway.
 
 type
   TThread* {.pure, final.}[TArg] =
-      object of TGcThread ## Nimrod thread. A thread is a heavy object (~14K)
+      object of TGcThread ## Nim thread. A thread is a heavy object (~14K)
                           ## that **must not** be part of a message! Use
                           ## a ``TThreadId`` for that.
     when TArg is void:
-      dataFn: proc () {.nimcall.}
+      dataFn: proc () {.nimcall, gcsafe.}
     else:
-      dataFn: proc (m: TArg) {.nimcall.}
+      dataFn: proc (m: TArg) {.nimcall, gcsafe.}
       data: TArg
   TThreadId*[TArg] = ptr TThread[TArg] ## the current implementation uses
                                        ## a pointer as a thread ID.
@@ -267,7 +273,7 @@ when not defined(boehmgc) and not hasSharedHeap:
   proc deallocOsPages()
 
 template threadProcWrapperBody(closure: expr) {.immediate.} =
-  when defined(globalsSlot): ThreadVarSetValue(globalsSlot, closure)
+  when declared(globalsSlot): threadVarSetValue(globalsSlot, closure)
   var t = cast[ptr TThread[TArg]](closure)
   when useStackMaskHack:
     var tls: TThreadLocalStorage
@@ -275,13 +281,13 @@ template threadProcWrapperBody(closure: expr) {.immediate.} =
     # init the GC for this thread:
     setStackBottom(addr(t))
     initGC()
-  when defined(registerThread):
+  when declared(registerThread):
     t.stackBottom = addr(t)
     registerThread(t)
   when TArg is void: t.dataFn()
   else: t.dataFn(t.data)
-  when defined(registerThread): unregisterThread(t)
-  when defined(deallocOsPages): deallocOsPages()
+  when declared(registerThread): unregisterThread(t)
+  when declared(deallocOsPages): deallocOsPages()
   # Since an unhandled exception terminates the whole process (!), there is
   # no need for a ``try finally`` here, nor would it be correct: The current
   # exception is tried to be re-raised by the code-gen after the ``finally``!
@@ -305,22 +311,26 @@ proc running*[TArg](t: TThread[TArg]): bool {.inline.} =
   ## returns true if `t` is running.
   result = t.dataFn != nil
 
-proc joinThread*[TArg](t: TThread[TArg]) {.inline.} = 
-  ## waits for the thread `t` to finish.
-  when hostOS == "windows":
+when hostOS == "windows":
+  proc joinThread*[TArg](t: TThread[TArg]) {.inline.} = 
+    ## waits for the thread `t` to finish.
     discard waitForSingleObject(t.sys, -1'i32)
-  else:
-    discard pthread_join(t.sys, nil)
 
-proc joinThreads*[TArg](t: varargs[TThread[TArg]]) = 
-  ## waits for every thread in `t` to finish.
-  when hostOS == "windows":
+  proc joinThreads*[TArg](t: varargs[TThread[TArg]]) = 
+    ## waits for every thread in `t` to finish.
     var a: array[0..255, TSysThread]
     sysAssert a.len >= t.len, "a.len >= t.len"
     for i in 0..t.high: a[i] = t[i].sys
-    discard waitForMultipleObjects(t.len.int32, 
+    discard waitForMultipleObjects(t.len.int32,
                                    cast[ptr TSysThread](addr(a)), 1, -1)
-  else:
+
+else:
+  proc joinThread*[TArg](t: TThread[TArg]) {.inline.} =
+    ## waits for the thread `t` to finish.
+    discard pthread_join(t.sys, nil)
+
+  proc joinThreads*[TArg](t: varargs[TThread[TArg]]) =
+    ## waits for every thread in `t` to finish.
     for i in 0..t.high: joinThread(t[i])
 
 when false:
@@ -332,30 +342,39 @@ when false:
       discard TerminateThread(t.sys, 1'i32)
     else:
       discard pthread_cancel(t.sys)
-    when defined(registerThread): unregisterThread(addr(t))
+    when declared(registerThread): unregisterThread(addr(t))
     t.dataFn = nil
 
-proc createThread*[TArg](t: var TThread[TArg], 
-                         tp: proc (arg: TArg) {.thread.}, 
-                         param: TArg) =
-  ## creates a new thread `t` and starts its execution. Entry point is the
-  ## proc `tp`. `param` is passed to `tp`. `TArg` can be ``void`` if you
-  ## don't need to pass any data to the thread.
-  when TArg isnot void: t.data = param
-  t.dataFn = tp
-  when hasSharedHeap: t.stackSize = ThreadStackSize
-  when hostOS == "windows":
+when hostOS == "windows":
+  proc createThread*[TArg](t: var TThread[TArg],
+                           tp: proc (arg: TArg) {.thread.}, 
+                           param: TArg) =
+    ## creates a new thread `t` and starts its execution. Entry point is the
+    ## proc `tp`. `param` is passed to `tp`. `TArg` can be ``void`` if you
+    ## don't need to pass any data to the thread.
+    when TArg isnot void: t.data = param
+    t.dataFn = tp
+    when hasSharedHeap: t.stackSize = ThreadStackSize
     var dummyThreadId: int32
     t.sys = createThread(nil, ThreadStackSize, threadProcWrapper[TArg],
                          addr(t), 0'i32, dummyThreadId)
     if t.sys <= 0:
-      raise newException(EResourceExhausted, "cannot create thread")
-  else:
+      raise newException(ResourceExhaustedError, "cannot create thread")
+else:
+  proc createThread*[TArg](t: var TThread[TArg], 
+                           tp: proc (arg: TArg) {.thread.}, 
+                           param: TArg) =
+    ## creates a new thread `t` and starts its execution. Entry point is the
+    ## proc `tp`. `param` is passed to `tp`. `TArg` can be ``void`` if you
+    ## don't need to pass any data to the thread.
+    when TArg isnot void: t.data = param
+    t.dataFn = tp
+    when hasSharedHeap: t.stackSize = ThreadStackSize
     var a {.noinit.}: Tpthread_attr
     pthread_attr_init(a)
     pthread_attr_setstacksize(a, ThreadStackSize)
     if pthread_create(t.sys, a, threadProcWrapper[TArg], addr(t)) != 0:
-      raise newException(EResourceExhausted, "cannot create thread")
+      raise newException(ResourceExhaustedError, "cannot create thread")
 
 proc threadId*[TArg](t: var TThread[TArg]): TThreadId[TArg] {.inline.} =
   ## returns the thread ID of `t`.
@@ -364,7 +383,7 @@ proc threadId*[TArg](t: var TThread[TArg]): TThreadId[TArg] {.inline.} =
 proc myThreadId*[TArg](): TThreadId[TArg] =
   ## returns the thread ID of the thread that calls this proc. This is unsafe
   ## because the type ``TArg`` is not checked for consistency!
-  result = cast[TThreadId[TArg]](ThreadVarGetValue(globalsSlot))
+  result = cast[TThreadId[TArg]](threadVarGetValue(globalsSlot))
 
 when false:
   proc mainThreadId*[TArg](): TThreadId[TArg] =

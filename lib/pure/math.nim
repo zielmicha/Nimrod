@@ -1,7 +1,7 @@
 #
 #
-#            Nimrod's Runtime Library
-#        (c) Copyright 2012 Andreas Rumpf
+#            Nim's Runtime Library
+#        (c) Copyright 2015 Andreas Rumpf
 #
 #    See the file "copying.txt", included in this
 #    distribution, for details about the copyright.
@@ -9,9 +9,11 @@
 
 ##   Constructive mathematics is naturally typed. -- Simon Thompson
 ## 
-## Basic math routines for Nimrod.
-## This module is available for the JavaScript target.
+## Basic math routines for Nim.
+## This module is available for the `JavaScript target
+## <backends.html#the-javascript-target>`_.
 
+include "system/inclrtl"
 {.push debugger:off .} # the user does not want to trace a part
                        # of the standard library!
 
@@ -19,25 +21,27 @@
 
 when defined(Posix) and not defined(haiku):
   {.passl: "-lm".}
+when not defined(js):
+  import times
 
 const
   PI* = 3.1415926535897932384626433 ## the circle constant PI (Ludolph's number)
   E* = 2.71828182845904523536028747 ## Euler's number
 
   MaxFloat64Precision* = 16 ## maximum number of meaningful digits
-                            ## after the decimal point for Nimrod's
+                            ## after the decimal point for Nim's
                             ## ``float64`` type.
   MaxFloat32Precision* = 8  ## maximum number of meaningful digits
-                            ## after the decimal point for Nimrod's
+                            ## after the decimal point for Nim's
                             ## ``float32`` type.
   MaxFloatPrecision* = MaxFloat64Precision ## maximum number of 
                                            ## meaningful digits
                                            ## after the decimal point 
-                                           ## for Nimrod's ``float`` type.
+                                           ## for Nim's ``float`` type.
 
 type
-  TFloatClass* = enum ## describes the class a floating point value belongs to.
-                      ## This is the type that is returned by `classify`.
+  FloatClass* = enum ## describes the class a floating point value belongs to.
+                     ## This is the type that is returned by `classify`.
     fcNormal,    ## value is an ordinary nonzero floating point value
     fcSubnormal, ## value is a subnormal (a very small) floating point value
     fcZero,      ## value is zero
@@ -46,10 +50,10 @@ type
     fcInf,       ## value is positive infinity
     fcNegInf     ## value is negative infinity
 
-proc classify*(x: float): TFloatClass = 
+proc classify*(x: float): FloatClass = 
   ## classifies a floating point value. Returns `x`'s class as specified by
-  ## `TFloatClass`.
-    
+  ## `FloatClass`.
+  
   # JavaScript and most C compilers have no classify:
   if x == 0.0:
     if 1.0/x == Inf:
@@ -73,28 +77,30 @@ proc binom*(n, k: int): int {.noSideEffect.} =
     result = (result * (n + 1 - i)) div i
     
 proc fac*(n: int): int {.noSideEffect.} = 
-  ## computes the faculty function
+  ## computes the faculty/factorial function.
   result = 1
   for i in countup(2, n):
     result = result * i
 
 proc isPowerOfTwo*(x: int): bool {.noSideEffect.} =
-  ## returns true, if x is a power of two, false otherwise.
-  ## Negative numbers are not a power of two.
-  return (x and -x) == x
+  ## returns true, if `x` is a power of two, false otherwise.
+  ## Zero and negative numbers are not a power of two.
+  return (x != 0) and ((x and (x - 1)) == 0)
 
-proc nextPowerOfTwo*(x: int): int =
-  ## returns the nearest power of two, so that
-  ## result**2 >= x > (result-1)**2.
-  result = x - 1
+proc nextPowerOfTwo*(x: int): int {.noSideEffect.} =
+  ## returns `x` rounded up to the nearest power of two.
+  ## Zero and negative numbers get rounded up to 1.
+  result = x - 1 
   when defined(cpu64):
     result = result or (result shr 32)
-  result = result or (result shr 16)
-  result = result or (result shr 8)
+  when sizeof(int) > 16:
+    result = result or (result shr 16)
+  when sizeof(int) > 8:
+    result = result or (result shr 8)
   result = result or (result shr 4)
   result = result or (result shr 2)
   result = result or (result shr 1)
-  inc(result)
+  result += 1 + ord(x<=0)
 
 proc countBits32*(n: int32): int {.noSideEffect.} =
   ## counts the set bits in `n`.
@@ -123,25 +129,25 @@ proc variance*(x: openArray[float]): float {.noSideEffect.} =
     result = result + diff*diff
   result = result / toFloat(len(x))
 
-proc random*(max: int): int
+proc random*(max: int): int {.gcsafe.}
   ## returns a random number in the range 0..max-1. The sequence of
   ## random number is always the same, unless `randomize` is called
   ## which initializes the random number generator with a "random"
   ## number, i.e. a tickcount.
 
-when not defined(windows):
-  proc random*(max: float): float
-    ## returns a random number in the range 0..<max. The sequence of
-    ## random number is always the same, unless `randomize` is called
-    ## which initializes the random number generator with a "random"
-    ## number, i.e. a tickcount. This is currently not supported for windows.
+proc random*(max: float): float {.gcsafe.}
+  ## returns a random number in the range 0..<max. The sequence of
+  ## random number is always the same, unless `randomize` is called
+  ## which initializes the random number generator with a "random"
+  ## number, i.e. a tickcount. This has a 16-bit resolution on windows
+  ## and a 48-bit resolution on other platforms.
 
-proc randomize*()
+proc randomize*() {.gcsafe.}
   ## initializes the random number generator with a "random"
   ## number, i.e. a tickcount. Note: Does nothing for the JavaScript target,
   ## as JavaScript does not support this.
   
-proc randomize*(seed: int)
+proc randomize*(seed: int) {.gcsafe.}
   ## initializes the random number generator with a specific seed.
   ## Note: Does nothing for the JavaScript target,
   ## as JavaScript does not support this.
@@ -190,7 +196,6 @@ when not defined(JS):
     ## computes x to power raised of y.
     
   # C procs:
-  proc gettime(dummy: ptr cint): cint {.importc: "time", header: "<time.h>".}
   proc srand(seed: cint) {.importc: "srand", header: "<stdlib.h>".}
   proc rand(): cint {.importc: "rand", header: "<stdlib.h>".}
   
@@ -199,13 +204,20 @@ when not defined(JS):
     proc drand48(): float {.importc: "drand48", header: "<stdlib.h>".}
     proc random(max: float): float =
       result = drand48() * max
-    
+  when defined(windows):
+    proc random(max: float): float =
+      # we are hardcodeing this because
+      # importcing macros is extremely problematic
+      # and because the value is publicly documented
+      # on MSDN and very unlikely to change
+      const rand_max = 32767
+      result = (float(rand()) / float(rand_max)) * max
   proc randomize() =
-    randomize(gettime(nil))
+    randomize(cast[int](epochTime()))
 
   proc randomize(seed: int) =
     srand(cint(seed))
-    when defined(srand48): srand48(seed)
+    when declared(srand48): srand48(seed)
   proc random(max: int): int =
     result = int(rand()) mod max
 
@@ -223,8 +235,8 @@ else:
     result = int(floor(mathrandom() * float(max)))
   proc random(max: float): float =
     result = float(mathrandom() * float(max))
-  proc randomize() = nil
-  proc randomize(seed: int) = nil
+  proc randomize() = discard
+  proc randomize(seed: int) = discard
   
   proc sqrt*(x: float): float {.importc: "Math.sqrt", nodecl.}
   proc ln*(x: float): float {.importc: "Math.log", nodecl.}
@@ -264,16 +276,23 @@ else:
 proc `mod`*(x, y: float): float =
   result = if y == 0.0: x else: x - y * (x/y).floor
 
-proc random*[T](x: TSlice[T]): T =
+proc random*[T](x: Slice[T]): T =
+  ## For a slice `a .. b` returns a value in the range `a .. b-1`.
   result = random(x.b - x.a) + x.a
-  
+
+proc random[T](a: openArray[T]): T =
+  ## returns a random element from the openarray `a`.
+  result = a[random(a.low..a.len)]
+
 type
-  TRunningStat* {.pure,final.} = object  ## an accumulator for statistical data
-    n*: int                              ## number of pushed data
-    sum*, min*, max*, mean*: float       ## self-explaining
+  RunningStat* = object                 ## an accumulator for statistical data
+    n*: int                             ## number of pushed data
+    sum*, min*, max*, mean*: float      ## self-explaining
     oldM, oldS, newS: float
 
-proc push*(s: var TRunningStat, x: float) = 
+{.deprecated: [TFloatClass: FloatClass, TRunningStat: RunningStat].}
+
+proc push*(s: var RunningStat, x: float) = 
   ## pushes a value `x` for processing
   inc(s.n)
   # See Knuth TAOCP vol 2, 3rd edition, page 232
@@ -294,16 +313,16 @@ proc push*(s: var TRunningStat, x: float) =
     s.oldS = s.newS
   s.sum = s.sum + x
   
-proc push*(s: var TRunningStat, x: int) = 
+proc push*(s: var RunningStat, x: int) = 
   ## pushes a value `x` for processing. `x` is simply converted to ``float``
   ## and the other push operation is called.
   push(s, toFloat(x))
   
-proc variance*(s: TRunningStat): float = 
+proc variance*(s: RunningStat): float = 
   ## computes the current variance of `s`
   if s.n > 1: result = s.newS / (toFloat(s.n - 1))
 
-proc standardDeviation*(s: TRunningStat): float = 
+proc standardDeviation*(s: RunningStat): float = 
   ## computes the current standard deviation of `s`
   result = sqrt(variance(s))
 
@@ -311,6 +330,8 @@ proc standardDeviation*(s: TRunningStat): float =
 {.pop.}
 
 when isMainModule and not defined(JS):
+  proc gettime(dummy: ptr cint): cint {.importc: "time", header: "<time.h>".}
+
   # Verifies random seed initialization.
   let seed = gettime(nil)
   randomize(seed)

@@ -1,6 +1,6 @@
 #
 #
-#           The Nimrod Compiler
+#           The Nim Compiler
 #        (c) Copyright 2013 Andreas Rumpf
 #
 #    See the file "copying.txt", included in this
@@ -14,8 +14,12 @@ import
   wordrecg, ropes, msgs, os, condsyms, idents, renderer, types, platform, math,
   magicsys, parser, nversion, nimsets, semfold, importer,
   procfind, lookups, rodread, pragmas, passes, semdata, semtypinst, sigmatch,
-  semthreads, intsets, transf, vmdef, vm, idgen, aliases, cgmeth, lambdalifting,
-  evaltempl, patterns, parampatterns, sempass2, pretty, semmacrosanity
+  intsets, transf, vmdef, vm, idgen, aliases, cgmeth, lambdalifting,
+  evaltempl, patterns, parampatterns, sempass2, nimfix.pretty, semmacrosanity,
+  semparallel, lowerings
+
+when defined(nimfix):
+  import nimfix.prettybase
 
 # implementation
 
@@ -36,9 +40,7 @@ proc semParamList(c: PContext, n, genericParams: PNode, s: PSym)
 proc addParams(c: PContext, n: PNode, kind: TSymKind)
 proc maybeAddResult(c: PContext, s: PSym, n: PNode)
 proc instGenericContainer(c: PContext, n: PNode, header: PType): PType
-proc tryExpr(c: PContext, n: PNode,
-             flags: TExprFlags = {}, bufferErrors = false): PNode
-proc fixImmediateParams(n: PNode): PNode
+proc tryExpr(c: PContext, n: PNode, flags: TExprFlags = {}): PNode
 proc activate(c: PContext, n: PNode)
 proc semQuoteAst(c: PContext, n: PNode): PNode
 proc finishMethod(c: PContext, s: PSym)
@@ -65,8 +67,24 @@ proc fitNode(c: PContext, formal: PType, arg: PNode): PNode =
       # error correction:
       result = copyTree(arg)
       result.typ = formal
+    else:
+      let x = result.skipConv
+      if x.kind == nkPar and formal.kind != tyExpr:
+        changeType(x, formal, check=true)
+
+proc inferWithMetatype(c: PContext, formal: PType,
+                       arg: PNode, coerceDistincts = false): PNode
 
 var commonTypeBegin = PType(kind: tyExpr)
+
+proc isEmptyContainer(t: PType): bool =
+  case t.kind
+  of tyExpr, tyNil: result = true
+  of tyArray, tyArrayConstr: result = t.sons[1].kind == tyEmpty
+  of tySet, tySequence, tyOpenArray, tyVarargs:
+    result = t.sons[0].kind == tyEmpty
+  of tyGenericInst: result = isEmptyContainer(t.lastSon)
+  else: result = false
 
 proc commonType*(x, y: PType): PType =
   # new type relation that is used for array constructors,
@@ -91,6 +109,13 @@ proc commonType*(x, y: PType): PType =
     # check for seq[empty] vs. seq[int]
     let idx = ord(b.kind in {tyArray, tyArrayConstr})
     if a.sons[idx].kind == tyEmpty: return y
+  elif a.kind == tyTuple and b.kind == tyTuple and a.len == b.len:
+    var nt: PType
+    for i in 0.. <a.len:
+      if isEmptyContainer(a.sons[i]) and not isEmptyContainer(b.sons[i]):
+        if nt.isNil: nt = copyType(a, a.owner, false)
+        nt.sons[i] = b.sons[i]
+    if not nt.isNil: result = nt
     #elif b.sons[idx].kind == tyEmpty: return x
   elif a.kind == tyRange and b.kind == tyRange:
     # consider:  (range[0..3], range[0..4]) here. We should make that
@@ -115,31 +140,33 @@ proc commonType*(x, y: PType): PType =
     if a.kind in {tyRef, tyPtr}:
       k = a.kind
       if b.kind != a.kind: return x
-      a = a.sons[0]
-      b = b.sons[0]
+      a = a.lastSon
+      b = b.lastSon
     if a.kind == tyObject and b.kind == tyObject:
       result = commonSuperclass(a, b)
       # this will trigger an error later:
-      if result.isNil: return x
+      if result.isNil or result == a: return x
+      if result == b: return y
       if k != tyNone:
         let r = result
         result = newType(k, r.owner)
         result.addSonSkipIntLit(r)
 
-proc isTopLevel(c: PContext): bool {.inline.} = 
-  result = c.currentScope.depthLevel <= 2
-
 proc newSymS(kind: TSymKind, n: PNode, c: PContext): PSym = 
-  result = newSym(kind, considerAcc(n), getCurrOwner(), n.info)
+  result = newSym(kind, considerQuotedIdent(n), getCurrOwner(), n.info)
 
 proc newSymG*(kind: TSymKind, n: PNode, c: PContext): PSym =
   # like newSymS, but considers gensym'ed symbols
   if n.kind == nkSym:
+    # and sfGenSym in n.sym.flags:
     result = n.sym
-    internalAssert sfGenSym in result.flags
     internalAssert result.kind == kind
+    # when there is a nested proc inside a template, semtmpl
+    # will assign a wrong owner during the first pass over the
+    # template; we must fix it here: see #909
+    result.owner = getCurrOwner()
   else:
-    result = newSym(kind, considerAcc(n), getCurrOwner(), n.info)
+    result = newSym(kind, considerQuotedIdent(n), getCurrOwner(), n.info)
 
 proc semIdentVis(c: PContext, kind: TSymKind, n: PNode,
                  allowed: TSymFlags): PSym
@@ -153,12 +180,13 @@ proc paramsTypeCheck(c: PContext, typ: PType) {.inline.} =
     localError(typ.n.info, errXisNoType, typeToString(typ))
 
 proc expectMacroOrTemplateCall(c: PContext, n: PNode): PSym
-proc semTemplateExpr(c: PContext, n: PNode, s: PSym, semCheck = true): PNode
 proc semDirectOp(c: PContext, n: PNode, flags: TExprFlags): PNode
 proc semWhen(c: PContext, n: PNode, semCheck: bool = true): PNode
 proc isOpImpl(c: PContext, n: PNode): PNode
+proc semTemplateExpr(c: PContext, n: PNode, s: PSym,
+                     flags: TExprFlags = {}): PNode
 proc semMacroExpr(c: PContext, n, nOrig: PNode, sym: PSym,
-                  semCheck: bool = true): PNode
+                  flags: TExprFlags = {}): PNode
 
 proc symFromType(t: PType, info: TLineInfo): PSym =
   if t.sym != nil: return t.sym
@@ -193,7 +221,8 @@ proc fixupTypeAfterEval(c: PContext, evaluated, eOrig: PNode): PNode =
       result = semExprWithType(c, evaluated)
     else:
       result = evaluated
-      semmacrosanity.annotateType(result, eOrig.typ)
+      let expectedType = eOrig.typ.skipTypes({tyStatic})
+      semmacrosanity.annotateType(result, expectedType)
   else:
     result = semExprWithType(c, evaluated)
     #result = fitNode(c, e.typ, result) inlined with special case:
@@ -213,14 +242,26 @@ proc tryConstExpr(c: PContext, n: PNode): PNode =
   result = getConstExpr(c.module, e)
   if result != nil: return
 
+  let oldErrorCount = msgs.gErrorCounter
+  let oldErrorMax = msgs.gErrorMax
+  let oldErrorOutputs = errorOutputs
+
+  errorOutputs = {}
+  msgs.gErrorMax = high(int)
+
   try:
     result = evalConstExpr(c.module, e)
     if result == nil or result.kind == nkEmpty:
-      return nil
+      result = nil
+    else:
+      result = fixupTypeAfterEval(c, result, e)
 
-    result = fixupTypeAfterEval(c, result, e)
-  except:
-    return nil
+  except ERecoverableError:
+    result = nil
+
+  msgs.gErrorCounter = oldErrorCount
+  msgs.gErrorMax = oldErrorMax
+  errorOutputs = oldErrorOutputs
 
 proc semConstExpr(c: PContext, n: PNode): PNode =
   var e = semExprWithType(c, n)
@@ -244,12 +285,17 @@ proc semConstExpr(c: PContext, n: PNode): PNode =
 
 include hlo, seminst, semcall
 
-proc semAfterMacroCall(c: PContext, n: PNode, s: PSym): PNode = 
+proc semAfterMacroCall(c: PContext, n: PNode, s: PSym,
+                       flags: TExprFlags): PNode =
+  ## Semantically check the output of a macro.
+  ## This involves processes such as re-checking the macro output for type
+  ## coherence, making sure that variables declared with 'let' aren't
+  ## reassigned, and binding the unbound identifiers that the macro output
+  ## contains.
   inc(evalTemplateCounter)
   if evalTemplateCounter > 100:
     globalError(s.info, errTemplateInstantiationTooNested)
-  let oldFriend = c.friendModule
-  c.friendModule = s.owner.getModule
+  c.friendModules.add(s.owner.getModule)
 
   result = n
   if s.typ.sons[0] == nil:
@@ -260,7 +306,7 @@ proc semAfterMacroCall(c: PContext, n: PNode, s: PSym): PNode =
       # BUGFIX: we cannot expect a type here, because module aliases would not 
       # work then (see the ``tmodulealias`` test)
       # semExprWithType(c, result)
-      result = semExpr(c, result)
+      result = semExpr(c, result, flags)
     of tyStmt:
       result = semStmt(c, result)
     of tyTypeDesc:
@@ -269,15 +315,18 @@ proc semAfterMacroCall(c: PContext, n: PNode, s: PSym): PNode =
       result.typ = makeTypeDesc(c, typ)
       #result = symNodeFromType(c, typ, n.info)
     else:
-      result = semExpr(c, result)
+      result = semExpr(c, result, flags)
       result = fitNode(c, s.typ.sons[0], result)
       #GlobalError(s.info, errInvalidParamKindX, typeToString(s.typ.sons[0]))
   dec(evalTemplateCounter)
-  c.friendModule = oldFriend
+  discard c.friendModules.pop()
 
-proc semMacroExpr(c: PContext, n, nOrig: PNode, sym: PSym, 
-                  semCheck: bool = true): PNode = 
-  markUsed(n, sym)
+proc semMacroExpr(c: PContext, n, nOrig: PNode, sym: PSym,
+                  flags: TExprFlags = {}): PNode =
+  pushInfoContext(nOrig.info)
+
+  markUsed(n.info, sym)
+  styleCheckUse(n.info, sym)
   if sym == c.p.owner:
     globalError(n.info, errRecursiveDependencyX, sym.name.s)
 
@@ -285,7 +334,9 @@ proc semMacroExpr(c: PContext, n, nOrig: PNode, sym: PSym,
   #  c.evalContext = c.createEvalContext(emStatic)
 
   result = evalMacroCall(c.module, n, nOrig, sym)
-  if semCheck: result = semAfterMacroCall(c, result, sym)
+  if efNoSemCheck notin flags:
+    result = semAfterMacroCall(c, result, sym, flags)
+  popInfoContext()
 
 proc forceBool(c: PContext, n: PNode): PNode = 
   result = fitNode(c, getSysType(tyBool), n)
@@ -308,7 +359,7 @@ type
   TSemGenericFlags = set[TSemGenericFlag]
 
 proc semGenericStmt(c: PContext, n: PNode, flags: TSemGenericFlags,
-                    ctx: var TIntSet): PNode
+                    ctx: var IntSet): PNode
 
 include semtypes, semtempl, semgnrc, semstmts, semexprs
 
@@ -332,7 +383,11 @@ proc myOpen(module: PSym): PPassContext =
   c.semOperand = semOperand
   c.semConstBoolExpr = semConstBoolExpr
   c.semOverloadedCall = semOverloadedCall
+  c.semInferredLambda = semInferredLambda
+  c.semGenerateInstance = generateInstance
   c.semTypeNode = semTypeNode
+  c.instDeepCopy = sigmatch.instDeepCopy
+
   pushProcCon(c, module)
   pushOwner(c.module)
   c.importTable = openScope(c)
@@ -389,12 +444,7 @@ proc myProcess(context: PPassContext, n: PNode): PNode =
       if getCurrentException() of ESuggestDone: result = nil
       else: result = ast.emptyNode
       #if gCmd == cmdIdeTools: findSuggest(c, n)
-  
-proc checkThreads(c: PContext) =
-  if not needsGlobalAnalysis(): return
-  for i in 0 .. c.threadEntries.len-1:
-    semthreads.analyseThreadProc(c.threadEntries[i])
-  
+    
 proc myClose(context: PPassContext, n: PNode): PNode = 
   var c = PContext(context)
   closeScope(c)         # close module's scope
@@ -405,7 +455,6 @@ proc myClose(context: PPassContext, n: PNode): PNode =
   addCodeForGenerics(c, result)
   if c.module.ast != nil:
     result.add(c.module.ast)
-  checkThreads(c)
   popOwner()
   popProcCon(c)
 

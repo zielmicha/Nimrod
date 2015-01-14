@@ -1,7 +1,7 @@
 #
 #
-#           The Nimrod Compiler
-#        (c) Copyright 2014 Andreas Rumpf
+#           The Nim Compiler
+#        (c) Copyright 2015 Andreas Rumpf
 #
 #    See the file "copying.txt", included in this
 #    distribution, for details about the copyright.
@@ -9,9 +9,33 @@
 
 # This module handles the parsing of command line arguments.
 
+
+# We do this here before the 'import' statement so 'defined' does not get
+# confused with 'TGCMode.gcGenerational' etc.
+template bootSwitch(name, expr, userString: expr): expr =
+  # Helper to build boot constants, for debugging you can 'echo' the else part.
+  const name = if expr: " " & userString else: ""
+
+bootSwitch(usedRelease, defined(release), "-d:release")
+bootSwitch(usedGnuReadline, defined(useGnuReadline), "-d:useGnuReadline")
+bootSwitch(usedNoCaas, defined(noCaas), "-d:noCaas")
+bootSwitch(usedBoehm, defined(boehmgc), "--gc:boehm")
+bootSwitch(usedMarkAndSweep, defined(gcmarkandsweep), "--gc:markAndSweep")
+bootSwitch(usedGenerational, defined(gcgenerational), "--gc:generational")
+bootSwitch(usedNoGC, defined(nogc), "--gc:none")
+
 import 
   os, msgs, options, nversion, condsyms, strutils, extccomp, platform, lists, 
-  wordrecg, parseutils, babelcmd, idents
+  wordrecg, parseutils, nimblecmd, idents, parseopt
+
+# but some have deps to imported modules. Yay.
+bootSwitch(usedTinyC, hasTinyCBackend, "-d:tinyc")
+bootSwitch(usedAvoidTimeMachine, noTimeMachine, "-d:avoidTimeMachine")
+bootSwitch(usedNativeStacktrace,
+  defined(nativeStackTrace) and nativeStackTraceSupported,
+  "-d:nativeStackTrace")
+bootSwitch(usedFFI, hasFFI, "-d:useFFI")
+
 
 proc writeCommandLineUsage*()
 
@@ -19,7 +43,7 @@ type
   TCmdLinePass* = enum 
     passCmd1,                 # first pass over the command line
     passCmd2,                 # second pass over the command line
-    passPP                    # preprocessor called ProcessCommand()
+    passPP                    # preprocessor called processCommand()
 
 proc processCommand*(switch: string, pass: TCmdLinePass)
 proc processSwitch*(switch, arg: string, pass: TCmdLinePass, info: TLineInfo)
@@ -27,7 +51,7 @@ proc processSwitch*(switch, arg: string, pass: TCmdLinePass, info: TLineInfo)
 # implementation
 
 const
-  HelpMessage = "Nimrod Compiler Version $1 (" & CompileDate & ") [$2: $3]\n" &
+  HelpMessage = "Nim Compiler Version $1 (" & CompileDate & ") [$2: $3]\n" &
       "Copyright (c) 2006-2014 by Andreas Rumpf\n"
 
 const 
@@ -55,6 +79,14 @@ proc writeVersionInfo(pass: TCmdLinePass) =
     msgWriteln(`%`(HelpMessage, [VersionAsString, 
                                  platform.OS[platform.hostOS].name, 
                                  CPU[platform.hostCPU].name]))
+
+    discard """const gitHash = gorge("git log -n 1 --format=%H")
+    if gitHash.strip.len == 40:
+      msgWriteln("git hash: " & gitHash)"""
+
+    msgWriteln("active boot switches:" & usedRelease & usedAvoidTimeMachine &
+      usedTinyC & usedGnuReadline & usedNativeStacktrace & usedNoCaas &
+      usedFFI & usedBoehm & usedMarkAndSweep & usedGenerational & usedNoGC)
     quit(0)
 
 var
@@ -194,6 +226,7 @@ proc testCompileOption*(switch: string, info: TLineInfo): bool =
   of "tlsemulation": result = contains(gGlobalOptions, optTlsEmulation)
   of "implicitstatic": result = contains(gOptions, optImplicitStatic)
   of "patterns": result = contains(gOptions, optPatterns)
+  of "experimental": result = gExperimentalMode
   else: invalidCmdLineOption(passCmd1, switch, info)
   
 proc processPath(path: string, notRelativeToProj = false): string =
@@ -202,7 +235,9 @@ proc processPath(path: string, notRelativeToProj = false): string =
             path 
           else:
             options.gProjectPath / path
-  result = unixToNativePath(p % ["nimrod", getPrefixDir(), "lib", libpath,
+  result = unixToNativePath(p % ["nimrod", getPrefixDir(),
+    "nim", getPrefixDir(),
+    "lib", libpath,
     "home", removeTrailingDirSep(os.getHomeDir()),
     "projectname", options.gProjectName,
     "projectpath", options.gProjectPath])
@@ -248,34 +283,44 @@ proc processSwitch(switch, arg: string, pass: TCmdLinePass, info: TLineInfo) =
   of "path", "p": 
     expectArg(switch, arg, pass, info)
     addPath(processPath(arg), info)
-  of "babelpath":
-    if pass in {passCmd2, passPP} and not options.gNoBabelPath:
+  of "nimblepath", "babelpath":
+    # keep the old name for compat
+    if pass in {passCmd2, passPP} and not options.gNoNimblePath:
       expectArg(switch, arg, pass, info)
       let path = processPath(arg, notRelativeToProj=true)
-      babelpath(path, info)
-  of "nobabelpath":
+      nimblePath(path, info)
+  of "nonimblepath", "nobabelpath":
     expectNoArg(switch, arg, pass, info)
-    options.gNoBabelPath = true
+    options.gNoNimblePath = true
   of "excludepath":
     expectArg(switch, arg, pass, info)
     let path = processPath(arg)
-    lists.excludeStr(options.searchPaths, path)
-    lists.excludeStr(options.lazyPaths, path)
+    lists.excludePath(options.searchPaths, path)
+    lists.excludePath(options.lazyPaths, path)
+    if (len(path) > 0) and (path[len(path) - 1] == DirSep):
+      let strippedPath = path[0 .. (len(path) - 2)]
+      lists.excludePath(options.searchPaths, strippedPath)
+      lists.excludePath(options.lazyPaths, strippedPath)
   of "nimcache":
     expectArg(switch, arg, pass, info)
     options.nimcacheDir = processPath(arg)
   of "out", "o": 
     expectArg(switch, arg, pass, info)
     options.outFile = arg
-  of "mainmodule", "m":
+  of "docseesrcurl":
     expectArg(switch, arg, pass, info)
-    optMainModule = arg
+    options.docSeeSrcUrl = arg
+  of "mainmodule", "m":
+    discard "allow for backwards compatibility, but don't do anything"
   of "define", "d": 
     expectArg(switch, arg, pass, info)
     defineSymbol(arg)
   of "undef", "u": 
     expectArg(switch, arg, pass, info)
     undefSymbol(arg)
+  of "symbol":
+    expectArg(switch, arg, pass, info)
+    declareSymbol(arg)  
   of "compile": 
     expectArg(switch, arg, pass, info)
     if pass in {passCmd2, passPP}: processCompile(arg)
@@ -351,7 +396,9 @@ proc processSwitch(switch, arg: string, pass: TCmdLinePass, info: TLineInfo) =
   of "linedir": processOnOffSwitch({optLineDir}, arg, pass, info)
   of "assertions", "a": processOnOffSwitch({optAssert}, arg, pass, info)
   of "deadcodeelim": processOnOffSwitchG({optDeadCodeElim}, arg, pass, info)
-  of "threads": processOnOffSwitchG({optThreads}, arg, pass, info)
+  of "threads":
+    processOnOffSwitchG({optThreads}, arg, pass, info)
+    if optThreads in gGlobalOptions: incl(gNotes, warnGcUnsafe)
   of "tlsemulation": processOnOffSwitchG({optTlsEmulation}, arg, pass, info)
   of "taintmode": processOnOffSwitchG({optTaintMode}, arg, pass, info)
   of "implicitstatic":
@@ -522,6 +569,9 @@ proc processSwitch(switch, arg: string, pass: TCmdLinePass, info: TLineInfo) =
     of "none": idents.firstCharIsCS = false
     else: localError(info, errGenerated,
       "'partial' or 'none' expected, but found " & arg)
+  of "experimental":
+    expectNoArg(switch, arg, pass, info)
+    gExperimentalMode = true
   else:
     if strutils.find(switch, '.') >= 0: options.setConfigVar(switch, arg)
     else: invalidCmdLineOption(pass, switch, info)
@@ -530,3 +580,33 @@ proc processCommand(switch: string, pass: TCmdLinePass) =
   var cmd, arg: string
   splitSwitch(switch, cmd, arg, pass, gCmdLineInfo)
   processSwitch(cmd, arg, pass, gCmdLineInfo)
+
+
+var
+  arguments* = ""
+    # the arguments to be passed to the program that
+    # should be run
+
+proc processSwitch*(pass: TCmdLinePass; p: OptParser) =
+  # hint[X]:off is parsed as (p.key = "hint[X]", p.val = "off")
+  # we fix this here
+  var bracketLe = strutils.find(p.key, '[')
+  if bracketLe >= 0: 
+    var key = substr(p.key, 0, bracketLe - 1)
+    var val = substr(p.key, bracketLe + 1) & ':' & p.val
+    processSwitch(key, val, pass, gCmdLineInfo)
+  else: 
+    processSwitch(p.key, p.val, pass, gCmdLineInfo)
+
+proc processArgument*(pass: TCmdLinePass; p: OptParser; 
+                      argsCount: var int): bool =
+  if argsCount == 0:
+    options.command = p.key
+  else:
+    if pass == passCmd1: options.commandArgs.add p.key
+    if argsCount == 1:
+      # support UNIX style filenames anywhere for portable build scripts:
+      options.gProjectName = unixToNativePath(p.key)
+      arguments = cmdLineRest(p)
+      result = true
+  inc argsCount

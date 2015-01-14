@@ -1,11 +1,15 @@
 #
 #
-#            Nimrod's Runtime Library
+#            Nim's Runtime Library
 #        (c) Copyright 2013 Dominik Picheta
 #
 #    See the file "copying.txt", included in this
 #    distribution, for details about the copyright.
 #
+
+{.deadCodeElim:on.}
+
+from posix import SocketHandle
 
 const
   EPOLLIN* = 0x00000001
@@ -33,8 +37,8 @@ const
 type 
   epoll_data* {.importc: "union epoll_data", 
       header: "<sys/epoll.h>", pure, final.} = object # TODO: This is actually a union.
-    thePtr* {.importc: "ptr".}: pointer # \
-    #fd*: cint
+    #thePtr* {.importc: "ptr".}: pointer
+    fd* {.importc: "fd".}: cint # \
     #u32*: uint32
     #u64*: uint64
 
@@ -54,7 +58,7 @@ proc epoll_create1*(flags: cint): cint {.importc: "epoll_create1",
   ## Same as epoll_create but with an FLAGS parameter.  The unused SIZE
   ##   parameter has been dropped.  
 
-proc epoll_ctl*(epfd: cint; op: cint; fd: cint; event: ptr epoll_event): cint {.
+proc epoll_ctl*(epfd: cint; op: cint; fd: cint | SocketHandle; event: ptr epoll_event): cint {.
     importc: "epoll_ctl", header: "<sys/epoll.h>".}
   ## Manipulate an epoll instance "epfd". Returns 0 in case of success,
   ##   -1 in case of error ( the "errno" variable will contain the

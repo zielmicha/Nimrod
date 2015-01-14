@@ -1,13 +1,13 @@
 #
 #
-#           The Nimrod Compiler
+#           The Nim Compiler
 #        (c) Copyright 2013 Andreas Rumpf
 #
 #    See the file "copying.txt", included in this
 #    distribution, for details about the copyright.
 #
 
-## exposes the Nimrod VM to clients.
+## exposes the Nim VM to clients.
 
 import
   ast, modules, passes, passaux, condsyms, 
@@ -17,17 +17,17 @@ proc execute*(program: string) =
   passes.gIncludeFile = includeModule
   passes.gImportModule = importModule
   initDefines()
-  LoadConfigs(DefaultConfig)
+  loadConfigs(DefaultConfig)
 
   initDefines()
-  DefineSymbol("nimrodvm")
-  when hasFFI: DefineSymbol("nimffi")
+  defineSymbol("nimrodvm")
+  when hasFFI: defineSymbol("nimffi")
   registerPass(verbosePass)
   registerPass(semPass)
-  registerPass(vmPass)
+  registerPass(evalPass)
 
   appendStr(searchPaths, options.libpath)
   compileSystemModule()
   var m = makeStdinModule()
   incl(m.flags, sfMainModule)
-  processModule(m, LLStreamOpen(program), nil)
+  processModule(m, llStreamOpen(program), nil)

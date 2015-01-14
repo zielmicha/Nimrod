@@ -1,7 +1,7 @@
 discard """
-  line: 12
-  errormsg: "write to foreign heap"
-  cmd: "nimrod cc --hints:on --threads:on $# $#"
+  line: 11
+  errormsg: "'horrible' is not GC-safe"
+  cmd: "nim $target --hints:on --threads:on $options $file"
 """
 
 var 

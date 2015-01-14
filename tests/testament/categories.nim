@@ -1,7 +1,7 @@
 #
 #
-#            Nimrod Tester
-#        (c) Copyright 2014 Andreas Rumpf
+#            Nim Tester
+#        (c) Copyright 2015 Andreas Rumpf
 #
 #    See the file "copying.txt", included in this
 #    distribution, for details about the copyright.
@@ -20,7 +20,7 @@ const
 proc delNimCache() =
   try:
     removeDir(nimcacheDir)
-  except EOS:
+  except OSError:
     echo "[Warning] could not delete: ", nimcacheDir
     
 proc runRodFiles(r: var TResults, cat: Category, options: string) =
@@ -71,7 +71,7 @@ proc compileRodFiles(r: var TResults, cat: Category, options: string) =
 proc safeCopyFile(src, dest: string) =
   try:
     copyFile(src, dest)
-  except EOS:
+  except OSError:
     echo "[Warning] could not copy: ", src, " to ", dest
 
 proc runBasicDLLTest(c, r: var TResults, cat: Category, options: string) =
@@ -87,7 +87,7 @@ proc runBasicDLLTest(c, r: var TResults, cat: Category, options: string) =
   else:
     # posix relies on crappy LD_LIBRARY_PATH (ugh!):
     var libpath = getenv"LD_LIBRARY_PATH".string
-    if peg"\i '/nimrod' (!'/')* '/lib'" notin libpath:
+    if peg"\i '/nim' (!'/')* '/lib'" notin libpath:
       echo "[Warning] insufficient LD_LIBRARY_PATH"
     var serverDll = DynlibFormat % "server"
     safeCopyFile("tests/dll" / serverDll, "lib" / serverDll)
@@ -107,12 +107,15 @@ proc dllTests(r: var TResults, cat: Category, options: string) =
 # ------------------------------ GC tests -------------------------------------
 
 proc gcTests(r: var TResults, cat: Category, options: string) =
-  template test(filename: expr): stmt =
+  template testWithoutMs(filename: expr): stmt =
     testSpec r, makeTest("tests/gc" / filename, options, cat, actionRun)
     testSpec r, makeTest("tests/gc" / filename, options &
                   " -d:release", cat, actionRun)
     testSpec r, makeTest("tests/gc" / filename, options &
                   " -d:release -d:useRealtimeGC", cat, actionRun)
+
+  template test(filename: expr): stmt =
+    testWithoutMs filename
     testSpec r, makeTest("tests/gc" / filename, options &
                   " --gc:markAndSweep", cat, actionRun)
     testSpec r, makeTest("tests/gc" / filename, options &
@@ -124,13 +127,15 @@ proc gcTests(r: var TResults, cat: Category, options: string) =
   test "gctest"
   test "gcleak3"
   test "gcleak4"
-  test "gcleak5"
+  # Disabled because it works and takes too long to run:
+  #test "gcleak5"
   test "weakrefs"
   test "cycleleak"
   test "closureleak"
-  test "refarrayleak"
-  test "stackrefleak"
+  testWithoutMs "refarrayleak"
   
+  test "stackrefleak"
+  test "cyclecollector"
 
 # ------------------------- threading tests -----------------------------------
 
@@ -151,7 +156,7 @@ proc threadTests(r: var TResults, cat: Category, options: string) =
   #test "tthreadanalysis"
   #test "tthreadsort"
   test "tthreadanalysis2"
-  test "tthreadanalysis3"
+  #test "tthreadanalysis3"
   test "tthreadheapviolation1"
 
 # ------------------------- IO tests ------------------------------------------
@@ -179,10 +184,12 @@ proc jsTests(r: var TResults, cat: Category, options: string) =
     
   for t in os.walkFiles("tests/js/t*.nim"):
     test(t)
-  for testfile in ["texceptions", "texcpt1", "texcsub", "tfinally",
-                   "tfinally2", "tfinally3", "tactiontable", "tmultim1",
-                   "tmultim3", "tmultim4"]:
-    test "tests/run/" & testfile & ".nim"
+  for testfile in ["exception/texceptions", "exception/texcpt1",
+                   "exception/texcsub", "exception/tfinally",
+                   "exception/tfinally2", "exception/tfinally3",
+                   "actiontable/tactiontable", "method/tmultim1",
+                   "method/tmultim3", "method/tmultim4"]:
+    test "tests/" & testfile & ".nim"
 
 # ------------------------- manyloc -------------------------------------------
 #proc runSpecialTests(r: var TResults, options: string) =
@@ -190,9 +197,9 @@ proc jsTests(r: var TResults, cat: Category, options: string) =
 #    testSpec(r, t, options)
 
 proc findMainFile(dir: string): string =
-  # finds the file belonging to ".nimrod.cfg"; if there is no such file
+  # finds the file belonging to ".nim.cfg"; if there is no such file
   # it returns the some ".nim" file if there is only one: 
-  const cfgExt = ".nimrod.cfg"
+  const cfgExt = ".nim.cfg"
   result = ""
   var nimFiles = 0
   for kind, file in os.walkDir(dir):
@@ -222,9 +229,95 @@ proc testStdlib(r: var TResults, pattern, options: string, cat: Category) =
     else:
       testNoSpec r, makeTest(test, options, cat, actionCompile)
 
+# ----------------------------- babel ----------------------------------------
+type PackageFilter = enum
+  pfCoreOnly
+  pfExtraOnly
+  pfAll
+
+let 
+  babelExe = findExe("babel")
+  babelDir = getHomeDir() / ".babel"
+  packageDir = babelDir / "pkgs"
+  packageIndex = babelDir / "packages.json"
+
+proc waitForExitEx(p: Process): int =
+  var outp = outputStream(p)
+  var line = newStringOfCap(120).TaintedString
+  while true:
+    if outp.readLine(line):
+      discard
+    else:
+      result = peekExitCode(p)
+      if result != -1: break
+  close(p)
+
+proc getPackageDir(package: string): string =
+  ## TODO - Replace this with dom's version comparison magic.
+  var commandOutput = execCmdEx("babel path $#" % package)
+  if commandOutput.exitCode != QuitSuccess:
+    return ""
+  else:
+    result = commandOutput[0].string
+
+iterator listPackages(filter: PackageFilter): tuple[name, url: string] =
+  let packageList = parseFile(packageIndex)
+
+  for package in packageList.items():
+    let
+      name = package["name"].str
+      url = package["url"].str
+      isCorePackage = "nimrod-code" in normalize(url)
+    case filter:
+    of pfCoreOnly:
+      if isCorePackage:
+        yield (name, url)
+    of pfExtraOnly:
+      if not isCorePackage:
+        yield (name, url)
+    of pfAll:
+      yield (name, url)
+
+proc testBabelPackages(r: var TResults, cat: Category, filter: PackageFilter) =
+  if babelExe == "":
+    echo("[Warning] - Cannot run babel tests: Babel binary not found.")
+    return
+
+  if execCmd("$# update" % babelExe) == QuitFailure:
+    echo("[Warning] - Cannot run babel tests: Babel update failed.")
+    return
+
+  let packageFileTest = makeTest("PackageFileParsed", "", cat)
+  try:
+    for name, url in listPackages(filter):
+      var test = makeTest(name, "", cat)
+      echo(url)
+      let
+        installProcess = startProcess(babelExe, "", ["install", "-y", name])
+        installStatus = waitForExitEx(installProcess)
+      installProcess.close
+      if installStatus != QuitSuccess:
+        r.addResult(test, "", "", reInstallFailed)
+        continue
+
+      let
+        buildPath = getPackageDir(name)[0.. -3]
+      let
+        buildProcess = startProcess(babelExe, buildPath, ["build"])
+        buildStatus = waitForExitEx(buildProcess)
+      buildProcess.close
+      if buildStatus != QuitSuccess:
+        r.addResult(test, "", "", reBuildFailed)
+      r.addResult(test, "", "", reSuccess)
+    r.addResult(packageFileTest, "", "", reSuccess)
+  except JsonParsingError:
+    echo("[Warning] - Cannot run babel tests: Invalid package file.")
+    r.addResult(packageFileTest, "", "", reBuildFailed)
+
+
 # ----------------------------------------------------------------------------
 
-const AdditionalCategories = ["debugger", "tools", "examples", "stdlib"]
+const AdditionalCategories = ["debugger", "examples", "lib", "babel-core"]
 
 proc `&.?`(a, b: string): string =
   # candidate for the stdlib?
@@ -248,22 +341,25 @@ proc processCategory(r: var TResults, cat: Category, options: string) =
     gcTests(r, cat, options)
   of "debugger":
     debuggerTests(r, cat, options)
-  of "tools":
-    testSpec r, makeTest("compiler/c2nim/c2nim.nim", options, cat)
-    testSpec r, makeTest("compiler/pas2nim/pas2nim.nim", options, cat)
   of "manyloc":
     manyLoc r, cat, options
   of "threads":
     threadTests r, cat, options & " --threads:on"
   of "io":
     ioTests r, cat, options
-  of "stdlib":
+  of "lib":
     testStdlib(r, "lib/pure/*.nim", options, cat)
     testStdlib(r, "lib/packages/docutils/highlite", options, cat)
   of "examples":
     compileExample(r, "examples/*.nim", options, cat)
     compileExample(r, "examples/gtk/*.nim", options, cat)
     compileExample(r, "examples/talk/*.nim", options, cat)
+  of "babel-core":
+    testBabelPackages(r, cat, pfCoreOnly)
+  of "babel-extra":
+    testBabelPackages(r, cat, pfExtraOnly)
+  of "babel-all":
+    testBabelPackages(r, cat, pfAll)
   else:
     for name in os.walkFiles("tests" & DirSep &.? cat.string / "t*.nim"):
       testSpec r, makeTest(name, options, cat)

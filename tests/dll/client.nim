@@ -1,6 +1,6 @@
 discard """
   output: "Done"
-  cmd: "nimrod cc --debuginfo --hints:on --define:useNimRtl $# $#"
+  cmd: "nim $target --debuginfo --hints:on --define:useNimRtl $options $file"
 """
 
 type

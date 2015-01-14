@@ -1,6 +1,6 @@
 #
 #
-#           The Nimrod Compiler
+#           The Nim Compiler
 #        (c) Copyright 2012 Andreas Rumpf
 #
 #    See the file "copying.txt", included in this
@@ -87,10 +87,17 @@ proc getUniqueType*(key: PType): PType =
       gCanonicalTypes[k] = key
       result = key
   of tyTypeDesc, tyTypeClasses, tyGenericParam,
-     tyFromExpr, tyStatic, tyFieldAccessor:
+     tyFromExpr, tyFieldAccessor:
     internalError("GetUniqueType")
-  of tyGenericInst, tyDistinct, tyOrdinal, tyMutable, tyConst, tyIter:
+  of tyDistinct:
+    if key.deepCopy != nil: result = key
+    else: result = getUniqueType(lastSon(key))
+  of tyGenericInst, tyOrdinal, tyMutable, tyConst, tyIter, tyStatic:
     result = getUniqueType(lastSon(key))
+    #let obj = lastSon(key)
+    #if obj.sym != nil and obj.sym.name.s == "TOption":
+    #  echo "for ", typeToString(key), " I returned "
+    #  debug result
   of tyArrayConstr, tyGenericInvokation, tyGenericBody,
      tyOpenArray, tyArray, tySet, tyRange, tyTuple,
      tyPtr, tyRef, tySequence, tyForward, tyVarargs, tyProxy, tyVar:
@@ -123,14 +130,13 @@ proc getUniqueType*(key: PType): PType =
         if t != nil and sameType(t, key): 
           return t
       idTablePut(gTypeTable[k], key, key)
-      result = key
+      result = key    
   of tyEnum:
     result = PType(idTableGet(gTypeTable[k], key))
     if result == nil: 
       idTablePut(gTypeTable[k], key, key)
       result = key
   of tyProc:
-    # tyVar is not 100% correct, but would speeds things up a little:
     if key.callConv != ccClosure:
       result = key
     else:
@@ -143,7 +149,7 @@ proc getUniqueType*(key: PType): PType =
       idTablePut(gTypeTable[k], key, key)
       result = key
       
-proc tableGetType*(tab: TIdTable, key: PType): PObject = 
+proc tableGetType*(tab: TIdTable, key: PType): RootRef = 
   # returns nil if we need to declare this type
   result = idTableGet(tab, key)
   if (result == nil) and (tab.counter > 0): 
@@ -160,6 +166,30 @@ proc makeSingleLineCString*(s: string): string =
   for c in items(s):
     result.add(c.toCChar)
   result.add('\"')
+
+proc mangle*(name: string): string =
+  ## Lowercases the given name and manges any non-alphanumeric characters
+  ## so they are represented as `HEX____`. If the name starts with a number,
+  ## `N` is prepended
+  result = newStringOfCap(name.len)
+  case name[0]
+  of Letters:
+    result.add(name[0].toLower)
+  of Digits:
+    result.add("N" & name[0])
+  else:
+    result = "HEX" & toHex(ord(name[0]), 2)
+  for i in 1..(name.len-1):
+    let c = name[i]
+    case c
+    of 'A'..'Z':
+      add(result, c.toLower)
+    of '_':
+      discard
+    of 'a'..'z', '0'..'9':
+      add(result, c)
+    else:
+      add(result, "HEX" & toHex(ord(c), 2))
 
 proc makeLLVMString*(s: string): PRope = 
   const MaxLineLength = 64

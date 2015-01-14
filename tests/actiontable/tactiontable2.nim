@@ -1,6 +1,6 @@
 discard """
   line: 21
-  errormsg: "invalid type: 'TTable'"
+  errormsg: "invalid type: 'Table[string, proc (string){.gcsafe.}]'"
 """
 
 import tables

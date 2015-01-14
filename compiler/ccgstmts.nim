@@ -1,7 +1,7 @@
 #
 #
-#           The Nimrod Compiler
-#        (c) Copyright 2013 Andreas Rumpf
+#           The Nim Compiler
+#        (c) Copyright 2015 Andreas Rumpf
 #
 #    See the file "copying.txt", included in this
 #    distribution, for details about the copyright.
@@ -24,10 +24,28 @@ proc registerGcRoot(p: BProc, v: PSym) =
     linefmt(p.module.initProc, cpsStmts,
       "#nimRegisterGlobalMarker($1);$n", prc)
 
+proc isAssignedImmediately(n: PNode): bool {.inline.} =
+  if n.kind == nkEmpty: return false
+  if isInvalidReturnType(n.typ):
+    # var v = f()
+    # is transformed into: var v;  f(addr v)
+    # where 'f' **does not** initialize the result!
+    return false
+  result = true
+
 proc genVarTuple(p: BProc, n: PNode) = 
   var tup, field: TLoc
   if n.kind != nkVarTuple: internalError(n.info, "genVarTuple")
   var L = sonsLen(n)
+
+  # if we have a something that's been captured, use the lowering instead:
+  var useLowering = false
+  for i in countup(0, L-3):
+    if n[i].kind != nkSym:
+      useLowering = true; break
+  if useLowering:
+    genStmts(p, lowerTupleUnpacking(n, p.prc))
+    return
   genLineDir(p, n)
   initLocExpr(p, n.sons[L-1], tup)
   var t = tup.t
@@ -40,7 +58,7 @@ proc genVarTuple(p: BProc, n: PNode) =
       registerGcRoot(p, v)
     else:
       assignLocalVar(p, v)
-      initLocalVar(p, v, immediateAsgn=true)
+      initLocalVar(p, v, immediateAsgn=isAssignedImmediately(n[L-1]))
     initLoc(field, locExpr, t.sons[i], tup.s)
     if t.kind == tyTuple: 
       field.r = ropef("$1.Field$2", [rdLoc(tup), toRope(i)])
@@ -50,10 +68,21 @@ proc genVarTuple(p: BProc, n: PNode) =
                       [rdLoc(tup), mangleRecFieldName(t.n.sons[i].sym, t)])
     putLocIntoDest(p, v.loc, field)
 
+proc genDeref(p: BProc, e: PNode, d: var TLoc; enforceDeref=false)
+
 proc loadInto(p: BProc, le, ri: PNode, a: var TLoc) {.inline.} =
   if ri.kind in nkCallKinds and (ri.sons[0].kind != nkSym or
                                  ri.sons[0].sym.magic == mNone):
     genAsgnCall(p, le, ri, a)
+  elif ri.kind in {nkDerefExpr, nkHiddenDeref}:
+    # this is a hacky way to fix #1181 (tmissingderef)::
+    #
+    #  var arr1 = cast[ptr array[4, int8]](addr foo)[]
+    #
+    # However, fixing this properly really requires modelling 'array' as
+    # a 'struct' in C to preserve dereferencing semantics completely. Not
+    # worth the effort until version 1.0 is out.
+    genDeref(p, ri, a, enforceDeref=true)
   else:
     expr(p, ri, a)
 
@@ -65,6 +94,7 @@ proc startBlock(p: BProc, start: TFormatStr = "{$n",
   setLen(p.blocks, result + 1)
   p.blocks[result].id = p.labels
   p.blocks[result].nestedTryStmts = p.nestedTryStmts.len.int16
+  p.blocks[result].nestedExceptStmts = p.inExceptBlock.int16
 
 proc assignLabel(b: var TBlock): PRope {.inline.} =
   b.label = con("LA", b.id.toRope)
@@ -137,7 +167,7 @@ proc genBreakState(p: BProc, n: PNode) =
   if n.sons[0].kind == nkClosure:
     # XXX this produces quite inefficient code!
     initLocExpr(p, n.sons[0].sons[1], a)
-    lineF(p, cpsStmts, "if (($1->Field0) < 0) break;$n", [rdLoc(a)])
+    lineF(p, cpsStmts, "if (((NI*) $1)[0] < 0) break;$n", [rdLoc(a)])
   else:
     initLocExpr(p, n.sons[0], a)
     # the environment is guaranteed to contain the 'state' field at offset 0:
@@ -145,12 +175,16 @@ proc genBreakState(p: BProc, n: PNode) =
   #  lineF(p, cpsStmts, "if (($1) < 0) break;$n", [rdLoc(a)])
 
 proc genVarPrototypeAux(m: BModule, sym: PSym)
+
 proc genSingleVar(p: BProc, a: PNode) =
   var v = a.sons[0].sym
   if sfCompileTime in v.flags: return
   var targetProc = p
-  var immediateAsgn = a.sons[2].kind != nkEmpty
   if sfGlobal in v.flags:
+    if v.flags * {sfImportc, sfExportc} == {sfImportc} and
+        a.sons[2].kind == nkEmpty and
+        v.loc.flags * {lfHeader, lfNoDecl} != {}:
+      return
     if sfPure in v.flags:
       # v.owner.kind != skModule:
       targetProc = p.module.preInitProc
@@ -169,9 +203,9 @@ proc genSingleVar(p: BProc, a: PNode) =
     registerGcRoot(p, v)
   else:
     assignLocalVar(p, v)
-    initLocalVar(p, v, immediateAsgn)
+    initLocalVar(p, v, isAssignedImmediately(a.sons[2]))
 
-  if immediateAsgn:
+  if a.sons[2].kind != nkEmpty:
     genLineDir(targetProc, a)
     loadInto(targetProc, a.sons[0], a.sons[2], v.loc)
 
@@ -260,37 +294,56 @@ proc genIf(p: BProc, n: PNode, d: var TLoc) =
     else: internalError(n.info, "genIf()")
   if sonsLen(n) > 1: fixLabel(p, lend)
 
-proc blockLeaveActions(p: BProc, howMany: int) = 
-  var L = p.nestedTryStmts.len
-  # danger of endless recursion! we workaround this here by a temp stack
+
+proc blockLeaveActions(p: BProc, howManyTrys, howManyExcepts: int) = 
+  # Called by return and break stmts.
+  # Deals with issues faced when jumping out of try/except/finally stmts,
+
   var stack: seq[PNode]
-  newSeq(stack, howMany)
-  for i in countup(1, howMany): 
-    stack[i-1] = p.nestedTryStmts[L-i]
-  setLen(p.nestedTryStmts, L-howMany)
+  newSeq(stack, 0)
   
   var alreadyPoppedCnt = p.inExceptBlock
-  for tryStmt in items(stack):
-    if gCmd != cmdCompileToCpp:
+  for i in countup(1, howManyTrys):
+    if not p.module.compileToCpp:
+      # Pop safe points generated by try
       if alreadyPoppedCnt > 0:
         dec alreadyPoppedCnt
       else:
         linefmt(p, cpsStmts, "#popSafePoint();$n")
+
+    # Pop this try-stmt of the list of nested trys
+    # so we don't infinite recurse on it in the next step.
+    var tryStmt = p.nestedTryStmts.pop
+    stack.add(tryStmt)
+
+    # Find finally-stmt for this try-stmt
+    # and generate a copy of its sons
     var finallyStmt = lastSon(tryStmt)
     if finallyStmt.kind == nkFinally: 
       genStmts(p, finallyStmt.sons[0])
+
   # push old elements again:
-  for i in countdown(howMany-1, 0): 
+  for i in countdown(howManyTrys-1, 0): 
     p.nestedTryStmts.add(stack[i])
-  if gCmd != cmdCompileToCpp:
-    for i in countdown(p.inExceptBlock-1, 0):
+
+  if not p.module.compileToCpp:
+    # Pop exceptions that was handled by the
+    # except-blocks we are in
+    for i in countdown(howManyExcepts-1, 0):
       linefmt(p, cpsStmts, "#popCurrentException();$n")
 
 proc genReturnStmt(p: BProc, t: PNode) =
   p.beforeRetNeeded = true
   genLineDir(p, t)
   if (t.sons[0].kind != nkEmpty): genStmts(p, t.sons[0])
-  blockLeaveActions(p, min(1, p.nestedTryStmts.len))
+  blockLeaveActions(p, 
+    howManyTrys    = p.nestedTryStmts.len,
+    howManyExcepts = p.inExceptBlock)
+  if (p.finallySafePoints.len > 0):
+    # If we're in a finally block, and we came here by exception
+    # consume it before we return.
+    var safePoint = p.finallySafePoints[p.finallySafePoints.len-1]
+    linefmt(p, cpsStmts, "if ($1.status != 0) #popCurrentException();$n", safePoint)    
   lineFF(p, cpsStmts, "goto BeforeRet;$n", "br label %BeforeRet$n", [])
 
 proc genComputedGoto(p: BProc; n: PNode) =
@@ -404,7 +457,7 @@ proc genBlock(p: BProc, t: PNode, d: var TLoc) =
       assert(t.sons[0].kind == nkSym)
       var sym = t.sons[0].sym
       sym.loc.k = locOther
-      sym.loc.a = p.breakIdx
+      sym.position = p.breakIdx+1
     expr(p, t.sons[1], d)
     endBlock(p)
 
@@ -443,20 +496,24 @@ proc genBreakStmt(p: BProc, t: PNode) =
     assert(t.sons[0].kind == nkSym)
     var sym = t.sons[0].sym
     assert(sym.loc.k == locOther)
-    idx = sym.loc.a
+    idx = sym.position-1
   else:
     # an unnamed 'break' can only break a loop after 'transf' pass:
     while idx >= 0 and not p.blocks[idx].isLoop: dec idx
     if idx < 0 or not p.blocks[idx].isLoop:
       internalError(t.info, "no loop to break")
   let label = assignLabel(p.blocks[idx])
-  blockLeaveActions(p, p.nestedTryStmts.len - p.blocks[idx].nestedTryStmts)
+  blockLeaveActions(p, 
+    p.nestedTryStmts.len - p.blocks[idx].nestedTryStmts,
+    p.inExceptBlock - p.blocks[idx].nestedExceptStmts)
   genLineDir(p, t)
   lineF(p, cpsStmts, "goto $1;$n", [label])
 
 proc getRaiseFrmt(p: BProc): string = 
-  if gCmd == cmdCompileToCpp: 
+  if p.module.compileToCpp:
     result = "throw NimException($1, $2);$n"
+  elif getCompilerProc("Exception") != nil:
+    result = "#raiseException((#Exception*)$1, $2);$n"
   else:
     result = "#raiseException((#E_Base*)$1, $2);$n"
 
@@ -474,10 +531,10 @@ proc genRaiseStmt(p: BProc, t: PNode) =
     var typ = skipTypes(t.sons[0].typ, abstractPtrs)
     genLineDir(p, t)
     lineCg(p, cpsStmts, getRaiseFrmt(p), [e, makeCString(typ.sym.name.s)])
-  else: 
+  else:
     genLineDir(p, t)
     # reraise the last exception:
-    if gCmd == cmdCompileToCpp:
+    if p.module.compileToCpp:
       line(p, cpsStmts, ~"throw;$n")
     else:
       linefmt(p, cpsStmts, "#reraiseException();$n")
@@ -513,7 +570,7 @@ proc genCaseSecondPass(p: BProc, t: PNode, d: var TLoc,
 proc genIfForCaseUntil(p: BProc, t: PNode, d: var TLoc,
                        rangeFormat, eqFormat: TFormatStr,
                        until: int, a: TLoc): TLabel =
-  # generate a C-if statement for a Nimrod case statement
+  # generate a C-if statement for a Nim case statement
   var labId = p.labels
   for i in 1..until:
     inc(p.labels)
@@ -570,6 +627,7 @@ proc genStringCase(p: BProc, t: PNode, d: var TLoc) =
       else: 
         # else statement: nothing to do yet
         # but we reserved a label, which we use later
+        discard
     linefmt(p, cpsStmts, "switch (#hashString($1) & $2) {$n", 
             rdLoc(a), toRope(bitMask))
     for j in countup(0, high(branches)):
@@ -700,7 +758,10 @@ proc genTryCpp(p: BProc, t: PNode, d: var TLoc) =
     i, length, blen: int
   genLineDir(p, t)
   exc = getTempName()
-  discard cgsym(p.module, "E_Base")
+  if getCompilerProc("Exception") != nil:
+    discard cgsym(p.module, "Exception")
+  else:
+    discard cgsym(p.module, "E_Base")
   add(p.nestedTryStmts, t)
   startBlock(p, "try {$n")
   expr(p, t.sons[0], d)
@@ -737,7 +798,9 @@ proc genTryCpp(p: BProc, t: PNode, d: var TLoc) =
     startBlock(p)
     var finallyBlock = t.lastSon
     if finallyBlock.kind == nkFinally:
-      expr(p, finallyBlock.sons[0], d)
+      #expr(p, finallyBlock.sons[0], d)
+      genStmts(p, finallyBlock.sons[0])
+
     line(p, cpsStmts, ~"throw;$n")
     endBlock(p)
   
@@ -746,7 +809,7 @@ proc genTryCpp(p: BProc, t: PNode, d: var TLoc) =
   
   discard pop(p.nestedTryStmts)
   if (i < length) and (t.sons[i].kind == nkFinally):
-    exprBlock(p, t.sons[i].sons[0], d)
+    genSimpleBlock(p, t.sons[i].sons[0])
   
 proc genTry(p: BProc, t: PNode, d: var TLoc) = 
   # code to generate:
@@ -782,10 +845,20 @@ proc genTry(p: BProc, t: PNode, d: var TLoc) =
   discard lists.includeStr(p.module.headerFiles, "<setjmp.h>")
   genLineDir(p, t)
   var safePoint = getTempName()
-  discard cgsym(p.module, "E_Base")
+  if getCompilerProc("Exception") != nil:
+    discard cgsym(p.module, "Exception")
+  else:
+    discard cgsym(p.module, "E_Base")
   linefmt(p, cpsLocals, "#TSafePoint $1;$n", safePoint)
   linefmt(p, cpsStmts, "#pushSafePoint(&$1);$n", safePoint)
-  linefmt(p, cpsStmts, "$1.status = setjmp($1.context);$n", safePoint)
+  if isDefined("nimStdSetjmp"):
+    linefmt(p, cpsStmts, "$1.status = setjmp($1.context);$n", safePoint)
+  elif isDefined("nimSigSetjmp"):
+    linefmt(p, cpsStmts, "$1.status = sigsetjmp($1.context, 0);$n", safePoint)
+  elif isDefined("nimRawSetjmp"):
+    linefmt(p, cpsStmts, "$1.status = _setjmp($1.context);$n", safePoint)
+  else:
+    linefmt(p, cpsStmts, "$1.status = setjmp($1.context);$n", safePoint)
   startBlock(p, "if ($1.status == 0) {$n", [safePoint])
   var length = sonsLen(t)
   add(p.nestedTryStmts, t)
@@ -827,7 +900,9 @@ proc genTry(p: BProc, t: PNode, d: var TLoc) =
   discard pop(p.nestedTryStmts)
   endBlock(p) # end of else block
   if i < length and t.sons[i].kind == nkFinally:
-    exprBlock(p, t.sons[i].sons[0], d)
+    p.finallySafePoints.add(safePoint)
+    genSimpleBlock(p, t.sons[i].sons[0])
+    discard pop(p.finallySafePoints)
   linefmt(p, cpsStmts, "if ($1.status != 0) #reraiseException();$n", safePoint)
 
 proc genAsmOrEmitStmt(p: BProc, t: PNode, isAsmStmt=false): PRope =
@@ -838,7 +913,7 @@ proc genAsmOrEmitStmt(p: BProc, t: PNode, isAsmStmt=false): PRope =
       res.add(t.sons[i].strVal)
     of nkSym:
       var sym = t.sons[i].sym
-      if sym.kind in {skProc, skIterator, skMethod}: 
+      if sym.kind in {skProc, skIterator, skClosureIterator, skMethod}:
         var a: TLoc
         initLocExpr(p, t.sons[i], a)
         res.add(rdLoc(a).ropeToStr)
@@ -855,8 +930,8 @@ proc genAsmOrEmitStmt(p: BProc, t: PNode, isAsmStmt=false): PRope =
   if isAsmStmt and hasGnuAsm in CC[cCompiler].props:
     for x in splitLines(res):
       var j = 0
-      while x[j] in {' ', '\t'}: inc(j)
-      if x[j] == ':' and x[j+1] == '"' or x[j] == '"':
+      while x[j] in {' ', '\t', ':'}: inc(j)
+      if x[j] == '"':
         # some clobber register list:
         app(result, x); app(result, tnl)
       elif x[j] != '\0':
@@ -865,6 +940,7 @@ proc genAsmOrEmitStmt(p: BProc, t: PNode, isAsmStmt=false): PRope =
         app(result, x)
         app(result, "\\n\"\n")
   else:
+    res.add(tnl)
     result = res.toRope
 
 proc genAsmStmt(p: BProc, t: PNode) = 

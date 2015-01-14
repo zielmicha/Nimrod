@@ -1,6 +1,6 @@
 #
 #
-#           The Nimrod Compiler
+#           The Nim Compiler
 #        (c) Copyright 2013 Andreas Rumpf
 #
 #    See the file "copying.txt", included in this
@@ -92,8 +92,8 @@ proc rawImportSymbol(c: PContext, s: PSym) =
     if s.kind == skConverter: addConverter(c, s)
     if hasPattern(s): addPattern(c, s)
 
-proc importSymbol(c: PContext, n: PNode, fromMod: PSym) = 
-  let ident = lookups.considerAcc(n)
+proc importSymbol(c: PContext, n: PNode, fromMod: PSym) =        
+  let ident = lookups.considerQuotedIdent(n)
   let s = strTableGet(fromMod.tab, ident)
   if s == nil:
     localError(n.info, errUndeclaredIdentifier, ident.s)
@@ -103,7 +103,7 @@ proc importSymbol(c: PContext, n: PNode, fromMod: PSym) =
       internalError(n.info, "importSymbol: 2")
     # for an enumeration we have to add all identifiers
     case s.kind
-    of skProc, skMethod, skIterator, skMacro, skTemplate, skConverter:
+    of skProcKinds:
       # for a overloadable syms add all overloaded routines
       var it: TIdentIter
       var e = initIdentIter(it, fromMod.tab, s.name)
@@ -113,7 +113,7 @@ proc importSymbol(c: PContext, n: PNode, fromMod: PSym) =
         e = nextIdentIter(it, fromMod.tab)
     else: rawImportSymbol(c, s)
 
-proc importAllSymbolsExcept(c: PContext, fromMod: PSym, exceptSet: TIntSet) =
+proc importAllSymbolsExcept(c: PContext, fromMod: PSym, exceptSet: IntSet) =
   var i: TTabIter
   var s = initTabIter(i, fromMod.tab)
   while s != nil:
@@ -126,10 +126,10 @@ proc importAllSymbolsExcept(c: PContext, fromMod: PSym, exceptSet: TIntSet) =
     s = nextIter(i, fromMod.tab)
 
 proc importAllSymbols*(c: PContext, fromMod: PSym) =
-  var exceptSet: TIntSet
+  var exceptSet: IntSet
   importAllSymbolsExcept(c, fromMod, exceptSet)
 
-proc importForwarded(c: PContext, n: PNode, exceptSet: TIntSet) =
+proc importForwarded(c: PContext, n: PNode, exceptSet: IntSet) =
   if n.isNil: return
   case n.kind
   of nkExportStmt:
@@ -153,25 +153,27 @@ proc importModuleAs(n: PNode, realModule: PSym): PSym =
     localError(n.info, errGenerated, "module alias must be an identifier")
   elif n.sons[1].ident.id != realModule.name.id:
     # some misguided guy will write 'import abc.foo as foo' ...
-    result = createModuleAlias(realModule, n.sons[1].ident, n.sons[1].info)
+    result = createModuleAlias(realModule, n.sons[1].ident, realModule.info)
 
-proc myImportModule(c: PContext, n: PNode): PSym =
+proc myImportModule(c: PContext, n: PNode): PSym = 
   var f = checkModuleName(n)
   if f != InvalidFileIDX:
     result = importModuleAs(n, gImportModule(c.module, f))
+    if result.info.fileIndex == n.info.fileIndex:
+      localError(n.info, errGenerated, "A module cannot import itself")
     if sfDeprecated in result.flags:
       message(n.info, warnDeprecated, result.name.s)
 
 proc evalImport(c: PContext, n: PNode): PNode = 
   result = n
-  var emptySet: TIntSet
+  var emptySet: IntSet
   for i in countup(0, sonsLen(n) - 1): 
     var m = myImportModule(c, n.sons[i])
     if m != nil:
       # ``addDecl`` needs to be done before ``importAllSymbols``!
       addDecl(c, m)             # add symbol to symbol table of module
       importAllSymbolsExcept(c, m, emptySet)
-      importForwarded(c, m.ast, emptySet)
+      #importForwarded(c, m.ast, emptySet)
 
 proc evalFrom(c: PContext, n: PNode): PNode = 
   result = n
@@ -193,7 +195,7 @@ proc evalImportExcept*(c: PContext, n: PNode): PNode =
     addDecl(c, m)               # add symbol to symbol table of module
     var exceptSet = initIntSet()
     for i in countup(1, sonsLen(n) - 1): 
-      let ident = lookups.considerAcc(n.sons[i])
+      let ident = lookups.considerQuotedIdent(n.sons[i])
       exceptSet.incl(ident.id)
     importAllSymbolsExcept(c, m, exceptSet)
-    importForwarded(c, m.ast, exceptSet)
+    #importForwarded(c, m.ast, exceptSet)

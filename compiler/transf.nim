@@ -1,7 +1,7 @@
 #
 #
-#           The Nimrod Compiler
-#        (c) Copyright 2013 Andreas Rumpf
+#           The Nim Compiler
+#        (c) Copyright 2015 Andreas Rumpf
 #
 #    See the file "copying.txt", included in this
 #    distribution, for details about the copyright.
@@ -13,17 +13,14 @@
 # * inlines iterators
 # * inlines constants
 # * performes constant folding
-# * converts "continue" to "break"
+# * converts "continue" to "break"; disambiguates "break"
 # * introduces method dispatchers
 # * performs lambda lifting for closure support
 
 import 
   intsets, strutils, lists, options, ast, astalgo, trees, treetab, msgs, os, 
   idents, renderer, types, passes, semfold, magicsys, cgmeth, rodread,
-  lambdalifting, sempass2
-
-const 
-  genPrefix* = ":tmp"         # prefix for generated names
+  lambdalifting, sempass2, lowerings
 
 # implementation
 
@@ -47,7 +44,6 @@ type
     inlining: int            # > 0 if we are in inlining context (copy vars)
     nestedProcs: int         # > 0 if we are in a nested proc
     contSyms, breakSyms: seq[PSym]  # to transform 'continue' and 'break'
-    inLoop: int              # > 0 if we are in a loop
   PTransf = ref TTransfContext
 
 proc newTransNode(a: PNode): PTransNode {.inline.} = 
@@ -113,7 +109,7 @@ proc newAsgnStmt(c: PTransf, le: PNode, ri: PTransNode): PTransNode =
   result[1] = ri
 
 proc transformSymAux(c: PTransf, n: PNode): PNode =
-  #if n.sym.kind == skIterator and n.sym.typ.callConv == ccClosure:
+  #if n.sym.kind == skClosureIterator:
   #  return liftIterSym(n)
   var b: PNode
   var tc = c.transCon
@@ -169,6 +165,7 @@ proc transformVarSection(c: PTransf, v: PNode): PTransNode =
         idNodeTablePut(c.transCon.mapping, it.sons[j].sym, newSymNode(newVar))
         defs[j] = newSymNode(newVar).PTransNode
       assert(it.sons[L-2].kind == nkEmpty)
+      defs[L-2] = ast.emptyNode.PTransNode
       defs[L-1] = transform(c, it.sons[L-1])
       result[i] = defs
 
@@ -203,6 +200,18 @@ proc newLabel(c: PTransf, n: PNode): PSym =
   result = newSym(skLabel, nil, getCurrOwner(c), n.info)
   result.name = getIdent(genPrefix & $result.id)
 
+proc freshLabels(c: PTransf, n: PNode; symMap: var TIdTable) =
+  if n.kind in {nkBlockStmt, nkBlockExpr}:
+    if n.sons[0].kind == nkSym:
+      let x = newLabel(c, n[0])
+      idTablePut(symMap, n[0].sym, x)
+      n.sons[0].sym = x
+  if n.kind == nkSym and n.sym.kind == skLabel:
+    let x = PSym(idTableGet(symMap, n.sym))
+    if x != nil: n.sym = x
+  else:
+    for i in 0 .. <safeLen(n): freshLabels(c, n.sons[i], symMap)
+
 proc transformBlock(c: PTransf, n: PNode): PTransNode =
   var labl: PSym
   if n.sons[0].kind != nkEmpty:
@@ -214,14 +223,6 @@ proc transformBlock(c: PTransf, n: PNode): PTransNode =
   result = transformSons(c, n)
   discard c.breakSyms.pop
   result[0] = newSymNode(labl).PTransNode
-
-proc transformBreak(c: PTransf, n: PNode): PTransNode =
-  if c.inLoop > 0 or n.sons[0].kind != nkEmpty:
-    result = n.PTransNode
-  else:
-    let labl = c.breakSyms[c.breakSyms.high]
-    result = transformSons(c, n)
-    result[0] = newSymNode(labl).PTransNode
 
 proc transformLoopBody(c: PTransf, n: PNode): PTransNode =  
   # What if it contains "continue" and "break"? "break" needs 
@@ -240,13 +241,37 @@ proc transformLoopBody(c: PTransf, n: PNode): PTransNode =
     discard c.contSyms.pop()
   else: 
     result = transform(c, n)
-  
-proc newTupleAccess(tup: PNode, i: int): PNode = 
-  result = newNodeIT(nkBracketExpr, tup.info, tup.typ.sons[i])
-  addSon(result, copyTree(tup))
-  var lit = newNodeIT(nkIntLit, tup.info, getSysType(tyInt))
-  lit.intVal = i
-  addSon(result, lit)
+
+proc transformWhile(c: PTransf; n: PNode): PTransNode =
+  if c.inlining > 0:
+    result = transformSons(c, n)
+  else:
+    let labl = newLabel(c, n)
+    c.breakSyms.add(labl)
+    result = newTransNode(nkBlockStmt, n.info, 2)
+    result[0] = newSymNode(labl).PTransNode
+
+    var body = newTransNode(n)
+    for i in 0..n.len-2:
+      body[i] = transform(c, n.sons[i])
+    body[<n.len] = transformLoopBody(c, n.sons[<n.len])
+    result[1] = body
+    discard c.breakSyms.pop
+
+proc transformBreak(c: PTransf, n: PNode): PTransNode =
+  if n.sons[0].kind != nkEmpty or c.inlining > 0:
+    result = n.PTransNode
+    when false:
+      let lablCopy = idNodeTableGet(c.transCon.mapping, n.sons[0].sym)
+      if lablCopy.isNil:
+        result = n.PTransNode
+      else:
+        result = newTransNode(n.kind, n.info, 1)
+        result[0] = lablCopy.PTransNode
+  else:
+    let labl = c.breakSyms[c.breakSyms.high]
+    result = transformSons(c, n)
+    result[0] = newSymNode(labl).PTransNode
 
 proc unpackTuple(c: PTransf, n: PNode, father: PTransNode) = 
   # XXX: BUG: what if `n` is an expression with side-effects?
@@ -425,7 +450,7 @@ proc findWrongOwners(c: PTransf, n: PNode) =
         x.sym.owner.name.s & " " & getCurrOwner(c).name.s)
   else:
     for i in 0 .. <safeLen(n): findWrongOwners(c, n.sons[i])
-  
+
 proc transformFor(c: PTransf, n: PNode): PTransNode = 
   # generate access statements for the parameters (unless they are constant)
   # put mapping from formal parameters to actual parameters
@@ -433,20 +458,32 @@ proc transformFor(c: PTransf, n: PNode): PTransNode =
 
   var length = sonsLen(n)
   var call = n.sons[length - 2]
-  if call.kind notin nkCallKinds or call.sons[0].kind != nkSym or 
-      call.sons[0].typ.callConv == ccClosure or
-      call.sons[0].sym.kind != skIterator:
-    n.sons[length-1] = transformLoopBody(c, n.sons[length-1]).PNode
-    return lambdalifting.liftForLoop(n).PTransNode
-    #InternalError(call.info, "transformFor")
 
+  let labl = newLabel(c, n)
+  c.breakSyms.add(labl)
+  result = newTransNode(nkBlockStmt, n.info, 2)
+  result[0] = newSymNode(labl).PTransNode
+
+  if call.typ.kind != tyIter and
+    (call.kind notin nkCallKinds or call.sons[0].kind != nkSym or 
+      call.sons[0].sym.kind != skIterator):
+    n.sons[length-1] = transformLoopBody(c, n.sons[length-1]).PNode
+    result[1] = lambdalifting.liftForLoop(n).PTransNode
+    discard c.breakSyms.pop
+    return result
+  
   #echo "transforming: ", renderTree(n)
-  result = newTransNode(nkStmtList, n.info, 0)
+  var stmtList = newTransNode(nkStmtList, n.info, 0)
+  
   var loopBody = transformLoopBody(c, n.sons[length-1])
+
+  result[1] = stmtList
+  discard c.breakSyms.pop
+
   var v = newNodeI(nkVarSection, n.info)
   for i in countup(0, length - 3): 
     addVar(v, copyTree(n.sons[i])) # declare new vars
-  add(result, v.PTransNode)
+  add(stmtList, v.PTransNode)
   
   # Bugfix: inlined locals belong to the invoking routine, not to the invoked
   # iterator!
@@ -454,34 +491,40 @@ proc transformFor(c: PTransf, n: PNode): PTransNode =
   var newC = newTransCon(getCurrOwner(c))
   newC.forStmt = n
   newC.forLoopBody = loopBody
-  if iter.kind != skIterator: internalError(call.info, "transformFor") 
+  internalAssert iter.kind == skIterator
   # generate access statements for the parameters (unless they are constant)
   pushTransCon(c, newC)
   for i in countup(1, sonsLen(call) - 1): 
     var arg = transform(c, call.sons[i]).PNode
     var formal = skipTypes(iter.typ, abstractInst).n.sons[i].sym 
+    if arg.typ.kind == tyIter: continue
     case putArgInto(arg, formal.typ)
-    of paDirectMapping: 
+    of paDirectMapping:
       idNodeTablePut(newC.mapping, formal, arg)
-    of paFastAsgn: 
+    of paFastAsgn:
       # generate a temporary and produce an assignment statement:
       var temp = newTemp(c, formal.typ, formal.info)
       addVar(v, newSymNode(temp))
-      add(result, newAsgnStmt(c, newSymNode(temp), arg.PTransNode))
+      add(stmtList, newAsgnStmt(c, newSymNode(temp), arg.PTransNode))
       idNodeTablePut(newC.mapping, formal, newSymNode(temp))
     of paVarAsgn:
       assert(skipTypes(formal.typ, abstractInst).kind == tyVar)
       idNodeTablePut(newC.mapping, formal, arg)
       # XXX BUG still not correct if the arg has a side effect!
-  var body = iter.getBody
+  var body = iter.getBody.copyTree
   pushInfoContext(n.info)
+  # XXX optimize this somehow. But the check "c.inlining" is not correct:
+  var symMap: TIdTable
+  initIdTable symMap
+  freshLabels(c, body, symMap)
+
   inc(c.inlining)
-  add(result, transform(c, body))
-  #findWrongOwners(c, result.pnode)
+  add(stmtList, transform(c, body))
+  #findWrongOwners(c, stmtList.pnode)
   dec(c.inlining)
   popInfoContext()
   popTransCon(c)
-  #echo "transformed: ", renderTree(n)
+  # echo "transformed: ", stmtList.PNode.renderTree
   
 proc getMagicOp(call: PNode): TMagic = 
   if call.sons[0].kind == nkSym and
@@ -539,7 +582,7 @@ proc getMergeOp(n: PNode): PSym =
   else: discard
 
 proc flattenTreeAux(d, a: PNode, op: PSym) = 
-  var op2 = getMergeOp(a)
+  let op2 = getMergeOp(a)
   if op2 != nil and
       (op2.id == op.id or op.magic != mNone and op2.magic == op.magic): 
     for i in countup(1, sonsLen(a)-1): flattenTreeAux(d, a.sons[i], op)
@@ -547,18 +590,19 @@ proc flattenTreeAux(d, a: PNode, op: PSym) =
     addSon(d, copyTree(a))
   
 proc flattenTree(root: PNode): PNode = 
-  var op = getMergeOp(root)
+  let op = getMergeOp(root)
   if op != nil: 
     result = copyNode(root)
     addSon(result, copyTree(root.sons[0]))
     flattenTreeAux(result, root, op)
   else: 
     result = root
-  
+
 proc transformCall(c: PTransf, n: PNode): PTransNode = 
   var n = flattenTree(n)
-  var op = getMergeOp(n)
-  if (op != nil) and (op.magic != mNone) and (sonsLen(n) >= 3): 
+  let op = getMergeOp(n)
+  let magic = getMagic(n)
+  if op != nil and op.magic != mNone and n.len >= 3: 
     result = newTransNode(nkCall, n, 0)
     add(result, transform(c, n.sons[0]))
     var j = 1
@@ -573,11 +617,20 @@ proc transformCall(c: PTransf, n: PNode): PTransNode =
           inc(j)
       add(result, a.PTransNode)
     if len(result) == 2: result = result[1]
+  elif magic == mNBindSym:
+    # for bindSym(myconst) we MUST NOT perform constant folding:
+    result = n.PTransNode
+  elif magic == mProcCall:
+    # but do not change to its dispatcher:
+    result = transformSons(c, n[1])
   else:
     let s = transformSons(c, n).PNode
     # bugfix: check after 'transformSons' if it's still a method call:
     # use the dispatcher for the call:
     if s.sons[0].kind == nkSym and s.sons[0].sym.kind == skMethod:
+      let t = lastSon(s.sons[0].sym.ast)
+      if t.kind != nkSym or sfDispatcher notin t.sym.flags:
+        methodDef(s.sons[0].sym, false)
       result = methodCall(s).PTransNode
     else:
       result = s.PTransNode
@@ -648,25 +701,16 @@ proc transform(c: PTransf, n: PNode): PTransNode =
         if n.kind == nkMethodDef: methodDef(s, false)
     result = PTransNode(n)
   of nkForStmt: 
-    inc c.inLoop
     result = transformFor(c, n)
-    dec c.inLoop
   of nkParForStmt:
-    inc c.inLoop
     result = transformSons(c, n)
-    dec c.inLoop
   of nkCaseStmt: result = transformCase(c, n)
   of nkContinueStmt:
     result = PTransNode(newNodeI(nkBreakStmt, n.info))
     var labl = c.contSyms[c.contSyms.high]
     add(result, PTransNode(newSymNode(labl)))
   of nkBreakStmt: result = transformBreak(c, n)
-  of nkWhileStmt: 
-    inc c.inLoop
-    result = newTransNode(n)
-    result[0] = transform(c, n.sons[0])
-    result[1] = transformLoopBody(c, n.sons[1])
-    dec c.inLoop
+  of nkWhileStmt: result = transformWhile(c, n)
   of nkCall, nkHiddenCallConv, nkCommand, nkInfix, nkPrefix, nkPostfix, 
      nkCallStrLit: 
     result = transformCall(c, n)
@@ -741,10 +785,12 @@ proc transformBody*(module: PSym, n: PNode, prc: PSym): PNode =
     var c = openTransf(module, "")
     result = processTransf(c, n, prc)
     result = liftLambdas(prc, result)
-    #if prc.kind == skIterator and prc.typ.callConv == ccClosure:
+    #if prc.kind == skClosureIterator:
     #  result = lambdalifting.liftIterator(prc, result)
     incl(result.flags, nfTransf)
     when useEffectSystem: trackProc(prc, result)
+    #if prc.name.s == "testbody":
+    #  echo renderTree(result)
 
 proc transformStmt*(module: PSym, n: PNode): PNode =
   if nfTransf in n.flags:
@@ -754,6 +800,7 @@ proc transformStmt*(module: PSym, n: PNode): PNode =
     result = processTransf(c, n, module)
     result = liftLambdasForTopLevel(module, result)
     incl(result.flags, nfTransf)
+    when useEffectSystem: trackTopLevelStmt(module, result)
 
 proc transformExpr*(module: PSym, n: PNode): PNode =
   if nfTransf in n.flags:

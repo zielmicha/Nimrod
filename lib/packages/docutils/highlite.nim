@@ -1,6 +1,6 @@
 #
 #
-#            Nimrod's Runtime Library
+#            Nim's Runtime Library
 #        (c) Copyright 2012 Andreas Rumpf
 #
 #    See the file "copying.txt", included in this
@@ -23,7 +23,7 @@ type
     gtTagStart, gtTagEnd, gtKey, gtValue, gtRawData, gtAssembler, 
     gtPreprocessor, gtDirective, gtCommand, gtRule, gtHyperlink, gtLabel, 
     gtReference, gtOther
-  TGeneralTokenizer* = object of TObject
+  TGeneralTokenizer* = object of RootObj
     kind*: TTokenClass
     start*, length*: int
     buf: cstring
@@ -31,11 +31,11 @@ type
     state: TTokenClass
 
   TSourceLanguage* = enum 
-    langNone, langNimrod, langCpp, langCsharp, langC, langJava
+    langNone, langNim, langNimrod, langCpp, langCsharp, langC, langJava
 
 const 
-  sourceLanguageToStr*: array[TSourceLanguage, string] = ["none", "Nimrod", 
-    "C++", "C#", "C", "Java"]
+  sourceLanguageToStr*: array[TSourceLanguage, string] = ["none",
+    "Nim", "Nimrod", "C++", "C#", "C", "Java"]
   tokenClassToStr*: array[TTokenClass, string] = ["Eof", "None", "Whitespace", 
     "DecNumber", "BinNumber", "HexNumber", "OctNumber", "FloatNumber", 
     "Identifier", "Keyword", "StringLit", "LongStringLit", "CharLit", 
@@ -46,13 +46,15 @@ const
 
   # The following list comes from doc/keywords.txt, make sure it is
   # synchronized with this array by running the module itself as a test case.
-  nimrodKeywords = ["addr", "and", "as", "asm", "atomic", "bind", "block",
-    "break", "case", "cast", "const", "continue", "converter", "discard",
-    "distinct", "div", "do", "elif", "else", "end", "enum", "except", "export",
-    "finally", "for", "from", "generic", "if", "import", "in", "include",
-    "interface", "is", "isnot", "iterator", "lambda", "let", "macro", "method",
+  nimKeywords = ["addr", "and", "as", "asm", "atomic", "bind", "block",
+    "break", "case", "cast", "const", "continue", "converter",
+    "defer", "discard", "distinct", "div", "do",
+    "elif", "else", "end", "enum", "except", "export",
+    "finally", "for", "from", "func", 
+    "generic", "if", "import", "in", "include",
+    "interface", "is", "isnot", "iterator", "let", "macro", "method",
     "mixin", "mod", "nil", "not", "notin", "object", "of", "or", "out", "proc",
-    "ptr", "raise", "ref", "return", "shared", "shl", "shr", "static",
+    "ptr", "raise", "ref", "return", "shl", "shr", "static",
     "template", "try", "tuple", "type", "using", "var", "when", "while", "with",
     "without", "xor", "yield"]
 
@@ -61,9 +63,9 @@ proc getSourceLanguage*(name: string): TSourceLanguage =
     if cmpIgnoreStyle(name, sourceLanguageToStr[i]) == 0: 
       return i
   result = langNone
-
-proc initGeneralTokenizer*(g: var TGeneralTokenizer, buf: string) = 
-  g.buf = cstring(buf)
+  
+proc initGeneralTokenizer*(g: var TGeneralTokenizer, buf: cstring) =
+  g.buf = buf
   g.kind = low(TTokenClass)
   g.start = 0
   g.length = 0
@@ -72,11 +74,14 @@ proc initGeneralTokenizer*(g: var TGeneralTokenizer, buf: string) =
   while g.buf[pos] in {' ', '\x09'..'\x0D'}: inc(pos)
   g.pos = pos
 
+proc initGeneralTokenizer*(g: var TGeneralTokenizer, buf: string) = 
+  initGeneralTokenizer(g, cstring(buf))
+
 proc deinitGeneralTokenizer*(g: var TGeneralTokenizer) = 
   discard
 
 proc nimGetKeyword(id: string): TTokenClass = 
-  for k in nimrodKeywords:
+  for k in nimKeywords:
     if cmpIgnoreStyle(id, k) == 0: return gtKeyword
   result = gtIdentifier
   when false:
@@ -539,7 +544,7 @@ proc javaNextToken(g: var TGeneralTokenizer) =
 proc getNextToken*(g: var TGeneralTokenizer, lang: TSourceLanguage) = 
   case lang
   of langNone: assert false
-  of langNimrod: nimNextToken(g)
+  of langNim, langNimrod: nimNextToken(g)
   of langCpp: cppNextToken(g)
   of langCsharp: csharpNextToken(g)
   of langC: cNextToken(g)
@@ -553,8 +558,8 @@ when isMainModule:
     let input = string(readFile(filename))
     keywords = input.split()
     break
-  doAssert (not keywords.isNil, "Couldn't read any keywords.txt file!")
-  doAssert keywords.len == nimrodKeywords.len, "No matching lengths"
+  doAssert(not keywords.isNil, "Couldn't read any keywords.txt file!")
+  doAssert keywords.len == nimKeywords.len, "No matching lengths"
   for i in 0..keywords.len-1:
-    #echo keywords[i], " == ", nimrodKeywords[i]
-    doAssert keywords[i] == nimrodKeywords[i], "Unexpected keyword"
+    #echo keywords[i], " == ", nimKeywords[i]
+    doAssert keywords[i] == nimKeywords[i], "Unexpected keyword"

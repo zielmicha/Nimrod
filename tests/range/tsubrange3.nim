@@ -1,6 +1,6 @@
 discard """
   file: "tsubrange.nim"
-  outputsub: "value out of range: 50 [EOutOfRange]"
+  outputsub: "value out of range: 50 [RangeError]"
   exitcode: "1"
 """
 
@@ -8,7 +8,7 @@ type
   TRange = range[0..40]
   
 proc p(r: TRange) =
-  nil
+  discard
   
 var
   r: TRange
@@ -16,4 +16,3 @@ var
 r = y
 
 #p y
-  

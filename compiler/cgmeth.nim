@@ -1,6 +1,6 @@
 #
 #
-#           The Nimrod Compiler
+#           The Nim Compiler
 #        (c) Copyright 2013 Andreas Rumpf
 #
 #    See the file "copying.txt", included in this
@@ -11,7 +11,7 @@
 
 import 
   intsets, options, ast, astalgo, msgs, idents, renderer, types, magicsys,
-  sempass2
+  sempass2, strutils
 
 proc genConv(n: PNode, d: PType, downcast: bool): PNode = 
   var dest = skipTypes(d, abstractPtrs)
@@ -44,7 +44,8 @@ proc methodCall*(n: PNode): PNode =
     result.sons[i] = genConv(result.sons[i], disp.typ.sons[i], true)
 
 # save for incremental compilation:
-var gMethods: seq[TSymSeq] = @[]
+var
+  gMethods: seq[tuple[methods: TSymSeq, dispatcher: PSym]] = @[]
 
 proc sameMethodBucket(a, b: PSym): bool = 
   result = false
@@ -59,8 +60,8 @@ proc sameMethodBucket(a, b: PSym): bool =
       aa = skipTypes(aa, {tyGenericInst})
       bb = skipTypes(bb, {tyGenericInst})
       if (aa.kind == bb.kind) and (aa.kind in {tyVar, tyPtr, tyRef}): 
-        aa = aa.sons[0]
-        bb = bb.sons[0]
+        aa = aa.lastSon
+        bb = bb.lastSon
       else: 
         break 
     if sameType(aa, bb) or
@@ -80,31 +81,70 @@ proc attachDispatcher(s: PSym, dispatcher: PNode) =
   else:
     s.ast.add(dispatcher)
 
+proc createDispatcher(s: PSym): PSym =
+  var disp = copySym(s)
+  incl(disp.flags, sfDispatcher)
+  excl(disp.flags, sfExported)
+  disp.typ = copyType(disp.typ, disp.typ.owner, false)
+  # we can't inline the dispatcher itself (for now):
+  if disp.typ.callConv == ccInline: disp.typ.callConv = ccDefault
+  disp.ast = copyTree(s.ast)
+  disp.ast.sons[bodyPos] = ast.emptyNode
+  disp.loc.r = nil
+  if s.typ.sons[0] != nil:
+    if disp.ast.sonsLen > resultPos:
+      disp.ast.sons[resultPos].sym = copySym(s.ast.sons[resultPos].sym)
+    else:
+      # We've encountered a method prototype without a filled-in
+      # resultPos slot. We put a placeholder in there that will
+      # be updated in fixupDispatcher().
+      disp.ast.addSon(ast.emptyNode)
+  attachDispatcher(s, newSymNode(disp))
+  # attach to itself to prevent bugs:
+  attachDispatcher(disp, newSymNode(disp))
+  return disp
+
+proc fixupDispatcher(meth, disp: PSym) =
+  # We may have constructed the dispatcher from a method prototype
+  # and need to augment the incomplete dispatcher with information
+  # from later definitions, particularly the resultPos slot. Also,
+  # the lock level of the dispatcher needs to be updated/checked
+  # against that of the method.
+  if disp.ast.sonsLen > resultPos and meth.ast.sonsLen > resultPos and
+     disp.ast.sons[resultPos] == ast.emptyNode:
+    disp.ast.sons[resultPos] = copyTree(meth.ast.sons[resultPos])
+
+  # The following code works only with lock levels, so we disable
+  # it when they're not available.
+  when declared(TLockLevel):
+    proc `<`(a, b: TLockLevel): bool {.borrow.}
+    proc `==`(a, b: TLockLevel): bool {.borrow.}
+    if disp.typ.lockLevel == UnspecifiedLockLevel:
+      disp.typ.lockLevel = meth.typ.lockLevel
+    elif meth.typ.lockLevel != UnspecifiedLockLevel and
+         meth.typ.lockLevel != disp.typ.lockLevel:
+      message(meth.info, warnLockLevel,
+        "method has lock level $1, but another method has $2" %
+        [$meth.typ.lockLevel, $disp.typ.lockLevel])
+      # XXX The following code silences a duplicate warning in
+      # checkMethodeffects() in sempass2.nim for now.
+      if disp.typ.lockLevel < meth.typ.lockLevel:
+        disp.typ.lockLevel = meth.typ.lockLevel
+
 proc methodDef*(s: PSym, fromCache: bool) =
   var L = len(gMethods)
   for i in countup(0, L - 1):
-    let disp = gMethods[i][0]
+    var disp = gMethods[i].dispatcher
     if sameMethodBucket(disp, s):
-      add(gMethods[i], s)
+      add(gMethods[i].methods, s)
       attachDispatcher(s, lastSon(disp.ast))
+      fixupDispatcher(s, disp)
       when useEffectSystem: checkMethodEffects(disp, s)
       return 
-  add(gMethods, @[s])
   # create a new dispatcher:
-  if not fromCache:
-    var disp = copySym(s)
-    incl(disp.flags, sfDispatcher)
-    excl(disp.flags, sfExported)
-    disp.typ = copyType(disp.typ, disp.typ.owner, false)
-    # we can't inline the dispatcher itself (for now):
-    if disp.typ.callConv == ccInline: disp.typ.callConv = ccDefault
-    disp.ast = copyTree(s.ast)
-    disp.ast.sons[bodyPos] = ast.emptyNode
-    if s.typ.sons[0] != nil: 
-      disp.ast.sons[resultPos].sym = copySym(s.ast.sons[resultPos].sym)
-    attachDispatcher(s, newSymNode(disp))
-    # attach to itself to prevent bugs:
-    attachDispatcher(disp, newSymNode(disp))
+  add(gMethods, (methods: @[s], dispatcher: createDispatcher(s)))
+  if fromCache:
+    internalError(s.info, "no method dispatcher found")
 
 proc relevantCol(methods: TSymSeq, col: int): bool =
   # returns true iff the position is relevant
@@ -115,7 +155,7 @@ proc relevantCol(methods: TSymSeq, col: int): bool =
       if not sameType(t2, t):
         return true
   
-proc cmpSignatures(a, b: PSym, relevantCols: TIntSet): int = 
+proc cmpSignatures(a, b: PSym, relevantCols: IntSet): int = 
   for col in countup(1, sonsLen(a.typ) - 1): 
     if contains(relevantCols, col): 
       var aa = skipTypes(a.typ.sons[col], skipPtrs)
@@ -124,7 +164,7 @@ proc cmpSignatures(a, b: PSym, relevantCols: TIntSet): int =
       if (d != high(int)): 
         return d
   
-proc sortBucket(a: var TSymSeq, relevantCols: TIntSet) = 
+proc sortBucket(a: var TSymSeq, relevantCols: IntSet) = 
   # we use shellsort here; fast and simple
   var n = len(a)
   var h = 1
@@ -143,7 +183,7 @@ proc sortBucket(a: var TSymSeq, relevantCols: TIntSet) =
       a[j] = v
     if h == 1: break 
   
-proc genDispatcher(methods: TSymSeq, relevantCols: TIntSet): PSym =
+proc genDispatcher(methods: TSymSeq, relevantCols: IntSet): PSym =
   var base = lastSon(methods[0].ast).sym
   result = base
   var paramLen = sonsLen(base.typ)
@@ -194,8 +234,9 @@ proc generateMethodDispatchers*(): PNode =
   result = newNode(nkStmtList)
   for bucket in countup(0, len(gMethods) - 1): 
     var relevantCols = initIntSet()
-    for col in countup(1, sonsLen(gMethods[bucket][0].typ) - 1): 
-      if relevantCol(gMethods[bucket], col): incl(relevantCols, col)
-    sortBucket(gMethods[bucket], relevantCols)
-    addSon(result, newSymNode(genDispatcher(gMethods[bucket], relevantCols)))
+    for col in countup(1, sonsLen(gMethods[bucket].methods[0].typ) - 1): 
+      if relevantCol(gMethods[bucket].methods, col): incl(relevantCols, col)
+    sortBucket(gMethods[bucket].methods, relevantCols)
+    addSon(result,
+           newSymNode(genDispatcher(gMethods[bucket].methods, relevantCols)))
 

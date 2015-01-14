@@ -1,7 +1,7 @@
 #
 #
-#           The Nimrod Compiler
-#        (c) Copyright 2014 Andreas Rumpf
+#           The Nim Compiler
+#        (c) Copyright 2015 Andreas Rumpf
 #
 #    See the file "copying.txt", included in this
 #    distribution, for details about the copyright.
@@ -21,10 +21,10 @@ import
 
 const 
   MaxLineLength* = 80         # lines longer than this lead to a warning
-  numChars*: TCharSet = {'0'..'9', 'a'..'z', 'A'..'Z'}
-  SymChars*: TCharSet = {'a'..'z', 'A'..'Z', '0'..'9', '\x80'..'\xFF'}
-  SymStartChars*: TCharSet = {'a'..'z', 'A'..'Z', '\x80'..'\xFF'}
-  OpChars*: TCharSet = {'+', '-', '*', '/', '\\', '<', '>', '!', '?', '^', '.', 
+  numChars*: set[char] = {'0'..'9', 'a'..'z', 'A'..'Z'}
+  SymChars*: set[char] = {'a'..'z', 'A'..'Z', '0'..'9', '\x80'..'\xFF'}
+  SymStartChars*: set[char] = {'a'..'z', 'A'..'Z', '\x80'..'\xFF'}
+  OpChars*: set[char] = {'+', '-', '*', '/', '\\', '<', '>', '!', '?', '^', '.', 
     '|', '=', '%', '&', '$', '@', '~', ':', '\x80'..'\xFF'}
 
 # don't forget to update the 'highlite' module if these charsets should change
@@ -35,15 +35,16 @@ type
     tkSymbol, # keywords:
     tkAddr, tkAnd, tkAs, tkAsm, tkAtomic, 
     tkBind, tkBlock, tkBreak, tkCase, tkCast, 
-    tkConst, tkContinue, tkConverter, tkDiscard, tkDistinct, tkDiv, tkDo,
+    tkConst, tkContinue, tkConverter,
+    tkDefer, tkDiscard, tkDistinct, tkDiv, tkDo,
     tkElif, tkElse, tkEnd, tkEnum, tkExcept, tkExport,
-    tkFinally, tkFor, tkFrom,
+    tkFinally, tkFor, tkFrom, tkFunc,
     tkGeneric, tkIf, tkImport, tkIn, tkInclude, tkInterface, 
     tkIs, tkIsnot, tkIterator,
-    tkLambda, tkLet,
+    tkLet,
     tkMacro, tkMethod, tkMixin, tkMod, tkNil, tkNot, tkNotin, 
     tkObject, tkOf, tkOr, tkOut, 
-    tkProc, tkPtr, tkRaise, tkRef, tkReturn, tkShared, tkShl, tkShr, tkStatic,
+    tkProc, tkPtr, tkRaise, tkRef, tkReturn, tkShl, tkShr, tkStatic,
     tkTemplate, 
     tkTry, tkTuple, tkType, tkUsing, 
     tkVar, tkWhen, tkWhile, tkWith, tkWithout, tkXor,
@@ -71,15 +72,16 @@ const
     "tkSymbol",
     "addr", "and", "as", "asm", "atomic", 
     "bind", "block", "break", "case", "cast", 
-    "const", "continue", "converter", "discard", "distinct", "div", "do",
+    "const", "continue", "converter",
+    "defer", "discard", "distinct", "div", "do",
     "elif", "else", "end", "enum", "except", "export",
-    "finally", "for", "from", "generic", "if", 
+    "finally", "for", "from", "func", "generic", "if", 
     "import", "in", "include", "interface", "is", "isnot", "iterator",
-    "lambda", "let", 
+    "let",
     "macro", "method", "mixin", "mod", 
     "nil", "not", "notin", "object", "of", "or", 
     "out", "proc", "ptr", "raise", "ref", "return", 
-    "shared", "shl", "shr", "static",
+    "shl", "shr", "static",
     "template", 
     "try", "tuple", "type", "using",
     "var", "when", "while", "with", "without", "xor",
@@ -101,7 +103,8 @@ type
     base10,                   # base10 is listed as the first element,
                               # so that it is the correct default value
     base2, base8, base16
-  TToken* = object            # a Nimrod token
+
+  TToken* = object            # a Nim token
     tokType*: TTokType        # the type of the token
     indent*: int              # the indentation; != -1 if the token has been
                               # preceeded with indentation
@@ -110,16 +113,21 @@ type
     fNumber*: BiggestFloat    # the parsed floating point literal
     base*: TNumericalBase     # the numerical base; only valid for int
                               # or float literals
+    strongSpaceA*: int8       # leading spaces of an operator
+    strongSpaceB*: int8       # trailing spaces of an operator
     literal*: string          # the parsed (string) literal; and
                               # documentation comments are here too
     line*, col*: int
-  
+
+  TErrorHandler* = proc (info: TLineInfo; msg: TMsgKind; arg: string)
   TLexer* = object of TBaseLexer
     fileIdx*: int32
     indentAhead*: int         # if > 0 an indendation has already been read
                               # this is needed because scanning comments
                               # needs so much look-ahead
-  
+    currLineIndent*: int
+    strongSpaces*: bool
+    errorHandler*: TErrorHandler
 
 var gLinesCompiled*: int  # all lines that have been compiled
 
@@ -143,7 +151,7 @@ proc lexMessage*(L: TLexer, msg: TMsgKind, arg = "")
 proc isKeyword(kind: TTokType): bool = 
   result = (kind >= tokKeywordLow) and (kind <= tokKeywordHigh)
 
-proc isNimrodIdentifier*(s: string): bool =
+proc isNimIdentifier*(s: string): bool =
   if s[0] in SymStartChars:
     var i = 1
     while i < s.len:
@@ -173,6 +181,7 @@ proc prettyTok*(tok: TToken): string =
   else: result = tokToStr(tok)
   
 proc printTok*(tok: TToken) = 
+  write(stdout, tok.line, ":", tok.col, "\t")
   write(stdout, TokTypeToStr[tok.tokType])
   write(stdout, " ")
   writeln(stdout, tokToStr(tok))
@@ -183,6 +192,7 @@ proc initToken*(L: var TToken) =
   L.tokType = tkInvalid
   L.iNumber = 0
   L.indent = 0
+  L.strongSpaceA = 0
   L.literal = ""
   L.fNumber = 0.0
   L.base = base10
@@ -192,6 +202,7 @@ proc fillToken(L: var TToken) =
   L.tokType = tkInvalid
   L.iNumber = 0
   L.indent = 0
+  L.strongSpaceA = 0
   setLen(L.literal, 0)
   L.fNumber = 0.0
   L.base = base10
@@ -201,6 +212,7 @@ proc openLexer(lex: var TLexer, fileIdx: int32, inputstream: PLLStream) =
   openBaseLexer(lex, inputstream)
   lex.fileIdx = fileidx
   lex.indentAhead = - 1
+  lex.currLineIndent = 0
   inc(lex.lineNumber, inputstream.lineOffset) 
 
 proc closeLexer(lex: var TLexer) = 
@@ -213,14 +225,20 @@ proc getColumn(L: TLexer): int =
 proc getLineInfo(L: TLexer): TLineInfo = 
   result = newLineInfo(L.fileIdx, L.lineNumber, getColNumber(L, L.bufpos))
 
-proc lexMessage(L: TLexer, msg: TMsgKind, arg = "") = 
-  msgs.message(getLineInfo(L), msg, arg)
+proc dispMessage(L: TLexer; info: TLineInfo; msg: TMsgKind; arg: string) =
+  if L.errorHandler.isNil:
+    msgs.message(info, msg, arg)
+  else:
+    L.errorHandler(info, msg, arg)
 
-proc lexMessagePos(L: var TLexer, msg: TMsgKind, pos: int, arg = "") = 
+proc lexMessage(L: TLexer, msg: TMsgKind, arg = "") =
+  L.dispMessage(getLineInfo(L), msg, arg)
+
+proc lexMessagePos(L: var TLexer, msg: TMsgKind, pos: int, arg = "") =
   var info = newLineInfo(L.fileIdx, L.lineNumber, pos - L.lineStart)
-  msgs.message(info, msg, arg)
+  L.dispMessage(info, msg, arg)
 
-proc matchUnderscoreChars(L: var TLexer, tok: var TToken, chars: TCharSet) = 
+proc matchUnderscoreChars(L: var TLexer, tok: var TToken, chars: set[char]) = 
   var pos = L.bufpos              # use registers for pos, buf
   var buf = L.buf
   while true: 
@@ -237,7 +255,7 @@ proc matchUnderscoreChars(L: var TLexer, tok: var TToken, chars: TCharSet) =
       inc(pos)
   L.bufpos = pos
 
-proc matchTwoChars(L: TLexer, first: char, second: TCharSet): bool = 
+proc matchTwoChars(L: TLexer, first: char, second: set[char]): bool = 
   result = (L.buf[L.bufpos] == first) and (L.buf[L.bufpos + 1] in second)
 
 proc isFloatLiteral(s: string): bool =
@@ -245,6 +263,19 @@ proc isFloatLiteral(s: string): bool =
     if s[i] in {'.', 'e', 'E'}:
       return true
   result = false
+
+{.push overflowChecks: off.}
+# We need to parse the largest uint literal without overflow checks
+proc unsafeParseUInt(s: string, b: var BiggestInt, start = 0): int =
+  var i = start
+  if s[i] in {'0'..'9'}:
+    b = 0
+    while s[i] in {'0'..'9'}:
+      b = b * 10 + (ord(s[i]) - ord('0'))
+      inc(i)
+      while s[i] == '_': inc(i) # underscores are allowed and ignored
+    result = i - start
+{.pop.} # overflowChecks
 
 proc getNumber(L: var TLexer): TToken = 
   var 
@@ -338,7 +369,7 @@ proc getNumber(L: var TLexer): TToken =
         result.base = base2
         while true: 
           case L.buf[pos]
-          of 'A'..'Z', 'a'..'z', '2'..'9', '.': 
+          of '2'..'9', '.': 
             lexMessage(L, errInvalidNumber, result.literal)
             inc(pos)
           of '_': 
@@ -354,7 +385,7 @@ proc getNumber(L: var TLexer): TToken =
         result.base = base8
         while true: 
           case L.buf[pos]
-          of 'A'..'Z', 'a'..'z', '8'..'9', '.': 
+          of '8'..'9', '.': 
             lexMessage(L, errInvalidNumber, result.literal)
             inc(pos)
           of '_': 
@@ -368,25 +399,22 @@ proc getNumber(L: var TLexer): TToken =
           else: break 
       of 'O': 
         lexMessage(L, errInvalidNumber, result.literal)
-      of 'x', 'X': 
+      of 'x', 'X':
         result.base = base16
-        while true: 
+        while true:
           case L.buf[pos]
-          of 'G'..'Z', 'g'..'z': 
-            lexMessage(L, errInvalidNumber, result.literal)
-            inc(pos)
-          of '_': 
-            if L.buf[pos+1] notin {'0'..'9', 'a'..'f', 'A'..'F'}: 
+          of '_':
+            if L.buf[pos+1] notin {'0'..'9', 'a'..'f', 'A'..'F'}:
               lexMessage(L, errInvalidToken, "_")
               break
             inc(pos)
-          of '0'..'9': 
+          of '0'..'9':
             xi = `shl`(xi, 4) or (ord(L.buf[pos]) - ord('0'))
             inc(pos)
-          of 'a'..'f': 
+          of 'a'..'f':
             xi = `shl`(xi, 4) or (ord(L.buf[pos]) - ord('a') + 10)
             inc(pos)
-          of 'A'..'F': 
+          of 'A'..'F':
             xi = `shl`(xi, 4) or (ord(L.buf[pos]) - ord('A') + 10)
             inc(pos)
           else: break 
@@ -410,16 +438,28 @@ proc getNumber(L: var TLexer): TToken =
         (result.tokType == tkFloat64Lit): 
       result.fNumber = parseFloat(result.literal)
       if result.tokType == tkIntLit: result.tokType = tkFloatLit
+    elif result.tokType == tkUint64Lit:
+      xi = 0
+      let len = unsafeParseUInt(result.literal, xi)
+      if len != result.literal.len or len == 0:
+        raise newException(ValueError, "invalid integer: " & $xi)
+      result.iNumber = xi
     else:
       result.iNumber = parseBiggestInt(result.literal)
       if (result.iNumber < low(int32)) or (result.iNumber > high(int32)):
         if result.tokType == tkIntLit:
           result.tokType = tkInt64Lit
-        elif result.tokType in {tkInt8Lit, tkInt16Lit}:
-          lexMessage(L, errInvalidNumber, result.literal)
-  except EInvalidValue:
+        elif result.tokType in {tkInt8Lit, tkInt16Lit, tkInt32Lit}:
+          lexMessage(L, errNumberOutOfRange, result.literal)
+      elif result.tokType == tkInt8Lit and
+          (result.iNumber < int8.low or result.iNumber > int8.high):
+        lexMessage(L, errNumberOutOfRange, result.literal)
+      elif result.tokType == tkInt16Lit and
+          (result.iNumber < int16.low or result.iNumber > int16.high):
+        lexMessage(L, errNumberOutOfRange, result.literal)
+  except ValueError:
     lexMessage(L, errInvalidNumber, result.literal)
-  except EOverflow, EOutOfRange:
+  except OverflowError, RangeError:
     lexMessage(L, errNumberOutOfRange, result.literal)
   L.bufpos = endpos
 
@@ -470,7 +510,7 @@ proc getEscapedChar(L: var TLexer, tok: var TToken) =
     add(tok.literal, VT)
     inc(L.bufpos)
   of 't', 'T': 
-    add(tok.literal, Tabulator)
+    add(tok.literal, '\t')
     inc(L.bufpos)
   of '\'', '\"': 
     add(tok.literal, L.buf[L.bufpos])
@@ -507,7 +547,7 @@ proc handleCRLF(L: var TLexer, pos: int): int =
       lexMessagePos(L, hintLineTooLong, pos)
 
     if optEmbedOrigSrc in gGlobalOptions:
-      let lineStart = cast[TAddress](L.buf) + L.lineStart
+      let lineStart = cast[ByteAddress](L.buf) + L.lineStart
       let line = newString(cast[cstring](lineStart), col)
       addSourceLine(L.fileIdx, line)
   
@@ -528,6 +568,10 @@ proc getString(L: var TLexer, tok: var TToken, rawMode: bool) =
     tok.tokType = tkTripleStrLit # long string literal:
     inc(pos, 2)               # skip ""
     # skip leading newline:
+    if buf[pos] in {' ', '\t'}:
+      var newpos = pos+1
+      while buf[newpos] in {' ', '\t'}: inc newpos
+      if buf[newpos] in {CR, LF}: pos = newpos
     pos = handleCRLF(L, pos)
     buf = L.buf
     while true: 
@@ -634,29 +678,41 @@ proc getOperator(L: var TLexer, tok: var TToken) =
     h = h !& ord(c)
     inc(pos)
   endOperator(L, tok, pos, h)
+  # advance pos but don't store it in L.bufpos so the next token (which might
+  # be an operator too) gets the preceeding spaces:
+  tok.strongSpaceB = 0
+  while buf[pos] == ' ':
+    inc pos
+    inc tok.strongSpaceB
+  if buf[pos] in {CR, LF, nimlexbase.EndOfFile}:
+    tok.strongSpaceB = -1
 
-proc scanComment(L: var TLexer, tok: var TToken) = 
+proc scanComment(L: var TLexer, tok: var TToken) =
   var pos = L.bufpos
-  var buf = L.buf 
-  # a comment ends if the next line does not start with the # on the same
-  # column after only whitespace
+  var buf = L.buf
+  when not defined(nimfix):
+    assert buf[pos+1] == '#'
+    if buf[pos+2] == '[':
+      lexMessagePos(L, warnDeprecated, pos, "use '## [' instead; '##['")
   tok.tokType = tkComment
   # iNumber contains the number of '\n' in the token
   tok.iNumber = 0
-  var col = getColNumber(L, pos)
+  when defined(nimfix):
+    var col = getColNumber(L, pos)
   while true:
     var lastBackslash = -1
     while buf[pos] notin {CR, LF, nimlexbase.EndOfFile}:
       if buf[pos] == '\\': lastBackslash = pos+1
       add(tok.literal, buf[pos])
       inc(pos)
-    if lastBackslash > 0:
-      # a backslash is a continuation character if only followed by spaces
-      # plus a newline:
-      while buf[lastBackslash] == ' ': inc(lastBackslash)
-      if buf[lastBackslash] notin {CR, LF, nimlexbase.EndOfFile}:
-        # false positive:
-        lastBackslash = -1
+    when defined(nimfix):
+      if lastBackslash > 0:
+        # a backslash is a continuation character if only followed by spaces
+        # plus a newline:
+        while buf[lastBackslash] == ' ': inc(lastBackslash)
+        if buf[lastBackslash] notin {CR, LF, nimlexbase.EndOfFile}:
+          # false positive:
+          lastBackslash = -1
 
     pos = handleCRLF(L, pos)
     buf = L.buf
@@ -664,9 +720,16 @@ proc scanComment(L: var TLexer, tok: var TToken) =
     while buf[pos] == ' ': 
       inc(pos)
       inc(indent)
-    if buf[pos] == '#' and (col == indent or lastBackslash > 0):
+
+    when defined(nimfix):
+      template doContinue(): expr =
+        buf[pos] == '#' and (col == indent or lastBackslash > 0)
+    else:
+      template doContinue(): expr =
+        buf[pos] == '#' and buf[pos+1] == '#'
+    if doContinue():
       tok.literal.add "\n"
-      col = indent
+      when defined(nimfix): col = indent
       inc tok.iNumber
     else:
       if buf[pos] > ' ': 
@@ -677,11 +740,13 @@ proc scanComment(L: var TLexer, tok: var TToken) =
 proc skip(L: var TLexer, tok: var TToken) =
   var pos = L.bufpos
   var buf = L.buf
+  tok.strongSpaceA = 0
   while true:
     case buf[pos]
     of ' ':
       inc(pos)
-    of Tabulator:
+      inc(tok.strongSpaceA)
+    of '\t':
       lexMessagePos(L, errTabulatorsAreNotAllowed, pos)
       inc(pos)
     of CR, LF:
@@ -691,9 +756,25 @@ proc skip(L: var TLexer, tok: var TToken) =
       while buf[pos] == ' ':
         inc(pos)
         inc(indent)
-      if buf[pos] > ' ':
+      tok.strongSpaceA = 0
+      when defined(nimfix):
+        template doBreak(): expr = buf[pos] > ' '
+      else:
+        template doBreak(): expr =
+          buf[pos] > ' ' and (buf[pos] != '#' or buf[pos+1] == '#')
+      if doBreak():
         tok.indent = indent
+        L.currLineIndent = indent
         break
+    of '#':
+      when defined(nimfix):
+        break
+      else:
+        # do not skip documentation comment:
+        if buf[pos+1] == '#': break
+        if buf[pos+1] == '[':
+          lexMessagePos(L, warnDeprecated, pos, "use '# [' instead; '#['")
+        while buf[pos] notin {CR, LF, nimlexbase.EndOfFile}: inc(pos)
     else:
       break                   # EndOfFile also leaves the loop
   L.bufpos = pos
@@ -702,6 +783,7 @@ proc rawGetTok(L: var TLexer, tok: var TToken) =
   fillToken(tok)
   if L.indentAhead >= 0:
     tok.indent = L.indentAhead
+    L.currLineIndent = L.indentAhead
     L.indentAhead = -1
   else:
     tok.indent = -1
@@ -811,5 +893,5 @@ proc rawGetTok(L: var TLexer, tok: var TToken) =
         tok.tokType = tkInvalid
         lexMessage(L, errInvalidToken, c & " (\\" & $(ord(c)) & ')')
         inc(L.bufpos)
-  
+
 dummyIdent = getIdent("")

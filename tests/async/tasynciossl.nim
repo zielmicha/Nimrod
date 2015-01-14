@@ -1,11 +1,12 @@
 discard """
   file: "tasynciossl.nim"
-  cmd: "nimrod cc --hints:on --define:ssl $# $#"
+  cmd: "nim $target --hints:on --define:ssl $options $file"
   output: "20000"
 """
 import sockets, asyncio, strutils, times
 
-var disp = newDispatcher()
+var disp {.threadvar.}: PDispatcher
+disp = newDispatcher()
 var msgCount = 0
 
 when defined(ssl):
@@ -46,7 +47,7 @@ proc serverAccept(s: PAsyncSocket) =
 proc launchSwarm(disp: var PDispatcher, port: TPort, count: int,
                  buffered = true, useSSL = false) =
   for i in 1..count:
-    var client = AsyncSocket()
+    var client = asyncSocket()
     when defined(ssl):
       if useSSL:
         ctx1.wrapSocket(client)
@@ -55,7 +56,7 @@ proc launchSwarm(disp: var PDispatcher, port: TPort, count: int,
     client.connect("localhost", port)
 
 proc createSwarm(port: TPort, buffered = true, useSSL = false) =
-  var server = AsyncSocket()
+  var server = asyncSocket()
   when defined(ssl):
     if useSSL:
       ctx.wrapSocket(server)

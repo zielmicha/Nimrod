@@ -1,18 +1,18 @@
 addr and as asm atomic
 bind block break
 case cast const continue converter
-discard distinct div do
+defer discard distinct div do
 elif else end enum except export
-finally for from
+finally for from func
 generic
 if import in include interface is isnot iterator
-lambda let
+let
 macro method mixin mod
 nil not notin
 object of or out
 proc ptr
 raise ref return
-shared shl shr static
+shl shr static
 template try tuple type
 using
 var

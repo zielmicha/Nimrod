@@ -1,7 +1,7 @@
 #
 #
-#            Nimrod's Runtime Library
-#        (c) Copyright 2012 Nimrod Contributors
+#            Nim's Runtime Library
+#        (c) Copyright 2015 Nim Contributors
 #
 #    See the file "copying.txt", included in this
 #    distribution, for details about the copyright.
@@ -22,7 +22,7 @@ else:
 import os
 
 type
-  TMemFile* = object {.pure.} ## represents a memory mapped file
+  MemFile* = object  ## represents a memory mapped file
     mem*: pointer    ## a pointer to the memory mapped file. The pointer
                      ## can be used directly to change the contents of the
                      ## file, if it was opened with write access.
@@ -34,12 +34,63 @@ type
     else:
       handle: cint
 
-proc open*(filename: string, mode: TFileMode = fmRead,
-           mappedSize = -1, offset = 0, newFileSize = -1): TMemFile =
+{.deprecated: [TMemFile: MemFile].}
+
+proc mapMem*(m: var MemFile, mode: FileMode = fmRead,
+             mappedSize = -1, offset = 0): pointer =
+  var readonly = mode == fmRead
+  when defined(windows):
+    result = mapViewOfFileEx(
+      m.mapHandle,
+      if readonly: FILE_MAP_READ else: FILE_MAP_WRITE,
+      int32(offset shr 32),
+      int32(offset and 0xffffffff),
+      if mappedSize == -1: 0 else: mappedSize,
+      nil)
+    if result == nil:
+      raiseOSError(osLastError())
+  else:
+    assert mappedSize > 0
+    result = mmap(
+      nil,
+      mappedSize,
+      if readonly: PROT_READ else: PROT_READ or PROT_WRITE,
+      if readonly: (MAP_PRIVATE or MAP_POPULATE) else: (MAP_SHARED or MAP_POPULATE),
+      m.handle, offset)
+    if result == cast[pointer](MAP_FAILED):
+      raiseOSError(osLastError())
+
+
+proc unmapMem*(f: var MemFile, p: pointer, size: int) =
+  ## unmaps the memory region ``(p, <p+size)`` of the mapped file `f`.
+  ## All changes are written back to the file system, if `f` was opened
+  ## with write access. ``size`` must be of exactly the size that was requested
+  ## via ``mapMem``.
+  when defined(windows):
+    if unmapViewOfFile(p) == 0: raiseOSError(osLastError())
+  else:
+    if munmap(p, size) != 0: raiseOSError(osLastError())
+
+
+proc open*(filename: string, mode: FileMode = fmRead,
+           mappedSize = -1, offset = 0, newFileSize = -1): MemFile =
   ## opens a memory mapped file. If this fails, ``EOS`` is raised.
-  ## `newFileSize` can only be set if the file is not opened with ``fmRead``
-  ## access. `mappedSize` and `offset` can be used to map only a slice of
-  ## the file.
+  ## `newFileSize` can only be set if the file does not exist and is opened
+  ## with write access (e.g., with fmReadWrite). `mappedSize` and `offset`
+  ## can be used to map only a slice of the file. Example:
+  ##
+  ## .. code-block:: nim
+  ##   var
+  ##     mm, mm_full, mm_half: MemFile
+  ##
+  ##   mm = memfiles.open("/tmp/test.mmap", mode = fmWrite, newFileSize = 1024)    # Create a new file
+  ##   mm.close()
+  ##
+  ##   # Read the whole file, would fail if newFileSize was set
+  ##   mm_full = memfiles.open("/tmp/test.mmap", mode = fmReadWrite, mappedSize = -1)
+  ##
+  ##   # Read the first 512 bytes
+  ##   mm_half = memfiles.open("/tmp/test.mmap", mode = fmReadWrite, mappedSize = 512)
 
   # The file can be resized only when write mode is used:
   assert newFileSize == -1 or mode != fmRead
@@ -50,11 +101,11 @@ proc open*(filename: string, mode: TFileMode = fmRead,
     result.size = 0
 
   when defined(windows):
-    template fail(errCode: TOSErrorCode, msg: expr) =
+    template fail(errCode: OSErrorCode, msg: expr) =
       rollback()
       if result.fHandle != 0: discard closeHandle(result.fHandle)
       if result.mapHandle != 0: discard closeHandle(result.mapHandle)
-      osError(errCode)
+      raiseOSError(errCode)
       # return false
       #raise newException(EIO, msg)
 
@@ -71,7 +122,7 @@ proc open*(filename: string, mode: TFileMode = fmRead,
     when useWinUnicode:
       result.fHandle = callCreateFile(createFileW, newWideCString(filename))
     else:
-      result.fHandle = callCreateFile(CreateFileA, filename)
+      result.fHandle = callCreateFile(createFileA, filename)
 
     if result.fHandle == INVALID_HANDLE_VALUE:
       fail(osLastError(), "error opening file")
@@ -119,17 +170,20 @@ proc open*(filename: string, mode: TFileMode = fmRead,
       else: result.size = fileSize.int
 
   else:
-    template fail(errCode: TOSErrorCode, msg: expr) =
+    template fail(errCode: OSErrorCode, msg: expr) =
       rollback()
       if result.handle != 0: discard close(result.handle)
-      osError(errCode)
+      raiseOSError(errCode)
   
     var flags = if readonly: O_RDONLY else: O_RDWR
 
     if newFileSize != -1:
       flags = flags or O_CREAT or O_TRUNC
+      var permissions_mode = S_IRUSR or S_IWUSR
+      result.handle = open(filename, flags, permissions_mode)
+    else:
+      result.handle = open(filename, flags)
 
-    result.handle = open(filename, flags)
     if result.handle == -1:
       # XXX: errno is supposed to be set here
       # Is there an exception that wraps it?
@@ -154,30 +208,30 @@ proc open*(filename: string, mode: TFileMode = fmRead,
       nil,
       result.size,
       if readonly: PROT_READ else: PROT_READ or PROT_WRITE,
-      if readonly: MAP_PRIVATE else: MAP_SHARED,
+      if readonly: (MAP_PRIVATE or MAP_POPULATE) else: (MAP_SHARED or MAP_POPULATE),
       result.handle,
       offset)
 
     if result.mem == cast[pointer](MAP_FAILED):
       fail(osLastError(), "file mapping failed")
 
-proc close*(f: var TMemFile) =
+proc close*(f: var MemFile) =
   ## closes the memory mapped file `f`. All changes are written back to the
   ## file system, if `f` was opened with write access.
   
   var error = false
-  var lastErr: TOSErrorCode
+  var lastErr: OSErrorCode
 
   when defined(windows):
     if f.fHandle != INVALID_HANDLE_VALUE:
-      lastErr = osLastError()
       error = unmapViewOfFile(f.mem) == 0
+      lastErr = osLastError()
       error = (closeHandle(f.mapHandle) == 0) or error
       error = (closeHandle(f.fHandle) == 0) or error
   else:
     if f.handle != 0:
-      lastErr = osLastError()
       error = munmap(f.mem, f.size) != 0
+      lastErr = osLastError()
       error = (close(f.handle) != 0) or error
 
   f.size = 0
@@ -189,5 +243,5 @@ proc close*(f: var TMemFile) =
   else:
     f.handle = 0
   
-  if error: osError(lastErr)
+  if error: raiseOSError(lastErr)
 

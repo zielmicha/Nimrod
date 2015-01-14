@@ -1,20 +1,21 @@
 import posix, strutils, os
 
-type
-  Tstatfs {.importc: "struct statfs64", 
-            header: "<sys/statfs.h>", final, pure.} = object
-    f_type: int
-    f_bsize: int
-    f_blocks: int
-    f_bfree: int
-    f_bavail: int
-    f_files: int
-    f_ffree: int
-    f_fsid: int
-    f_namelen: int
+when false:
+  type
+    Tstatfs {.importc: "struct statfs64", 
+              header: "<sys/statfs.h>", final, pure.} = object
+      f_type: int
+      f_bsize: int
+      f_blocks: int
+      f_bfree: int
+      f_bavail: int
+      f_files: int
+      f_ffree: int
+      f_fsid: int
+      f_namelen: int
 
-proc statfs(path: string, buf: var Tstatfs): int {.
-  importc, header: "<sys/vfs.h>".}
+  proc statfs(path: string, buf: var Tstatfs): int {.
+    importc, header: "<sys/vfs.h>".}
 
 
 proc getSystemVersion*(): string =
@@ -23,7 +24,7 @@ proc getSystemVersion*(): string =
   var unix_info: TUtsname
   
   if uname(unix_info) != 0:
-    os.OSError()
+    os.raiseOSError(osLastError())
   
   if $unix_info.sysname == "Linux":
     # Linux
@@ -34,7 +35,15 @@ proc getSystemVersion*(): string =
   elif $unix_info.sysname == "Darwin":
     # Darwin
     result.add("Mac OS X ")
-    if "10" in $unix_info.release:
+    if "14" in $unix_info.release:
+      result.add("v10.10 Yosemite")
+    elif "13" in $unix_info.release:
+      result.add("v10.9 Mavericks")
+    elif "12" in $unix_info.release:
+      result.add("v10.8 Mountian Lion")
+    elif "11" in $unix_info.release:
+      result.add("v10.7 Lion")
+    elif "10" in $unix_info.release:
       result.add("v10.6 Snow Leopard")
     elif "9" in $unix_info.release:
       result.add("v10.5 Leopard")

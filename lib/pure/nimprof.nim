@@ -1,13 +1,13 @@
 #
 #
-#            Nimrod's Runtime Library
+#            Nim's Runtime Library
 #        (c) Copyright 2012 Andreas Rumpf
 #
 #    See the file "copying.txt", included in this
 #    distribution, for details about the copyright.
 #
 
-## Profiling support for Nimrod. This is an embedded profiler that requires
+## Profiling support for Nim. This is an embedded profiler that requires
 ## ``--profiler:on``. You only need to import this module to get a profiling
 ## report at program exit.
 
@@ -26,7 +26,7 @@ const
   withThreads = compileOption("threads")
   tickCountCorrection = 50_000
 
-when not defined(system.TStackTrace):
+when not declared(system.TStackTrace):
   type TStackTrace = array [0..20, cstring]
 
 # We use a simple hash table of bounded size to keep track of the stack traces:
@@ -58,21 +58,22 @@ when not defined(memProfiler):
     ## instruction count measure instead then.
     if intervalInUs <= 0: interval = 0
     else: interval = intervalInUs * 1000 - tickCountCorrection
-  
+
 when withThreads:
+  import locks
   var
     profilingLock: TLock
 
-  InitLock profilingLock
+  initLock profilingLock
 
 proc hookAux(st: TStackTrace, costs: int) =
   # this is quite performance sensitive!
-  when withThreads: Acquire profilingLock
+  when withThreads: acquire profilingLock
   inc totalCalls
   var last = high(st)
   while last > 0 and isNil(st[last]): dec last
   var h = hash(pointer(st[last])) and high(profileData)
-  
+
   # we use probing for maxChainLen entries and replace the encountered entry
   # with the minimal 'total' value:
   if emptySlots == 0:
@@ -106,7 +107,7 @@ proc hookAux(st: TStackTrace, costs: int) =
       h = ((5 * h) + 1) and high(profileData)
       inc chain
     maxChainLen = max(maxChainLen, chain)
-  when withThreads: Release profilingLock
+  when withThreads: release profilingLock
 
 when defined(memProfiler):
   const
@@ -131,9 +132,9 @@ else:
   proc hook(st: TStackTrace) {.nimcall.} =
     if interval == 0:
       hookAux(st, 1)
-    elif getticks() - t0 > interval:
+    elif getTicks() - t0 > interval:
       hookAux(st, 1)
-      t0 = getticks()  
+      t0 = getTicks()
 
 proc getTotal(x: ptr TProfileEntry): int =
   result = if isNil(x): 0 else: x.total
@@ -145,18 +146,18 @@ proc `//`(a, b: int): string =
   result = format("$1/$2 = $3%", a, b, formatFloat(a / b * 100.0, ffDefault, 2))
 
 proc writeProfile() {.noconv.} =
-  when defined(system.TStackTrace): 
+  when declared(system.TStackTrace):
     system.profilerHook = nil
   const filename = "profile_results.txt"
   echo "writing " & filename & "..."
-  var f: TFile
+  var f: File
   if open(f, filename, fmWrite):
     sort(profileData, cmpEntries)
     writeln(f, "total executions of each stack trace:")
     var entries = 0
     for i in 0..high(profileData):
       if profileData[i] != nil: inc entries
-    
+
     var perProc = initCountTable[string]()
     for i in 0..entries-1:
       var dups = initSet[string]()
@@ -166,7 +167,7 @@ proc writeProfile() {.noconv.} =
         let p = $procname
         if not containsOrIncl(dups, p):
           perProc.inc(p, profileData[i].total)
-    
+
     var sum = 0
     # only write the first 100 entries:
     for i in 0..min(100, entries-1):
@@ -188,16 +189,16 @@ var
   disabled: int
 
 proc disableProfiling*() =
-  when defined(system.TStackTrace):
+  when declared(system.TStackTrace):
     atomicDec disabled
     system.profilerHook = nil
 
 proc enableProfiling*() =
-  when defined(system.TStackTrace):
+  when declared(system.TStackTrace):
     if atomicInc(disabled) >= 0:
       system.profilerHook = hook
 
-when defined(system.TStackTrace):
+when declared(system.TStackTrace):
   system.profilerHook = hook
   addQuitProc(writeProfile)
 

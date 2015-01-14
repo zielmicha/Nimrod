@@ -1,7 +1,7 @@
 # tests for the interpreter
 
 proc loops(a: var int) =
-  nil
+  discard
   #var
   #  b: int
   #b = glob
@@ -58,7 +58,7 @@ proc TestLoops() =
       break
     break
 
-  while True:
+  while true:
     break
 
 
@@ -73,7 +73,7 @@ proc main() =
     res: int
     s: string
   #write(stdout, mymax(23, 45))
-  write(stdout, "Hallo! Wie heiﬂt du? ")
+  write(stdout, "Hallo! Wie heisst du? ")
   s = readLine(stdin)
   # test the case statement
   case s

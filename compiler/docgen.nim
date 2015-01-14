@@ -1,6 +1,6 @@
 #
 #
-#           The Nimrod Compiler
+#           The Nim Compiler
 #        (c) Copyright 2012 Andreas Rumpf
 #
 #    See the file "copying.txt", included in this
@@ -14,7 +14,7 @@
 import
   ast, strutils, strtabs, options, msgs, os, ropes, idents,
   wordrecg, syntaxes, renderer, lexer, rstast, rst, rstgen, times, highlite,
-  importer, sempass2, json
+  importer, sempass2, json, xmltree, cgi, typesrenderer
 
 type
   TSections = array[TSymKind, PRope]
@@ -23,8 +23,10 @@ type
     id: int                  # for generating IDs
     toc, section: TSections
     indexValFilename: string
+    analytics: string  # Google Analytics javascript, "" if doesn't exist
+    seenSymbols: StringTableRef # avoids duplicate symbol generation for HTML.
 
-  PDoc* = ref TDocumentor
+  PDoc* = ref TDocumentor ## Alias to type less.
 
 proc compilerMsgHandler(filename: string, line, col: int,
                         msgKind: rst.TMsgKind, arg: string) {.procvar.} =
@@ -40,19 +42,44 @@ proc compilerMsgHandler(filename: string, line, col: int,
   of mwRedefinitionOfLabel: k = warnRedefinitionOfLabel
   of mwUnknownSubstitution: k = warnUnknownSubstitutionX
   of mwUnsupportedLanguage: k = warnLanguageXNotSupported
+  of mwUnsupportedField: k = warnFieldXNotSupported
   globalError(newLineInfo(filename, line, col), k, arg)
+
+proc docgenFindFile(s: string): string {.procvar.} =
+  result = options.findFile(s)
+  if result.len == 0:
+    result = getCurrentDir() / s
+    if not existsFile(result): result = ""
 
 proc parseRst(text, filename: string,
               line, column: int, hasToc: var bool,
               rstOptions: TRstParseOptions): PRstNode =
   result = rstParse(text, filename, line, column, hasToc, rstOptions,
-                    options.findFile, compilerMsgHandler)
+                    docgenFindFile, compilerMsgHandler)
 
-proc newDocumentor*(filename: string, config: PStringTable): PDoc =
+proc newDocumentor*(filename: string, config: StringTableRef): PDoc =
   new(result)
   initRstGenerator(result[], (if gCmd != cmdRst2tex: outHtml else: outLatex),
                    options.gConfigVars, filename, {roSupportRawDirective},
-                   options.findFile, compilerMsgHandler)
+                   docgenFindFile, compilerMsgHandler)
+
+  if config.hasKey("doc.googleAnalytics"):
+    result.analytics = """
+<script>
+  (function(i,s,o,g,r,a,m){i['GoogleAnalyticsObject']=r;i[r]=i[r]||function(){
+  (i[r].q=i[r].q||[]).push(arguments)},i[r].l=1*new Date();a=s.createElement(o),
+  m=s.getElementsByTagName(o)[0];a.async=1;a.src=g;m.parentNode.insertBefore(a,m)
+  })(window,document,'script','//www.google-analytics.com/analytics.js','ga');
+
+  ga('create', '$1', 'auto');
+  ga('send', 'pageview');
+
+</script>
+    """ % [config["doc.googleAnalytics"]]
+  else:
+    result.analytics = ""
+
+  result.seenSymbols = newStringTable(modeCaseInsensitive)
   result.id = 100
 
 proc dispA(dest: var PRope, xml, tex: string, args: openArray[PRope]) =
@@ -138,6 +165,23 @@ proc genRecComment(d: PDoc, n: PNode): PRope =
   else:
     n.comment = nil
 
+proc getPlainDocstring(n: PNode): string =
+  ## Gets the plain text docstring of a node non destructively.
+  ##
+  ## You need to call this before genRecComment, whose side effects are removal
+  ## of comments from the tree. The proc will recursively scan and return all
+  ## the concatenated ``##`` comments of the node.
+  result = ""
+  if n == nil: return
+  if n.comment != nil and startsWith(n.comment, "##"):
+    result = n.comment
+  if result.len < 1:
+    if n.kind notin {nkEmpty..nkNilLit}:
+      for i in countup(0, len(n)-1):
+        result = getPlainDocstring(n.sons[i])
+        if result.len > 0: return
+
+
 proc findDocComment(n: PNode): PNode =
   if n == nil: return nil
   if not isNil(n.comment) and startsWith(n.comment, "##"): return n
@@ -199,14 +243,111 @@ proc getRstName(n: PNode): PRstNode =
     internalError(n.info, "getRstName()")
     result = nil
 
+proc newUniquePlainSymbol(d: PDoc, original: string): string =
+  ## Returns a new unique plain symbol made up from the original.
+  ##
+  ## When a collision is found in the seenSymbols table, new numerical variants
+  ## with underscore + number will be generated.
+  if not d.seenSymbols.hasKey(original):
+    result = original
+    d.seenSymbols[original] = ""
+    return
+
+  # Iterate over possible numeric variants of the original name.
+  var count = 2
+
+  while true:
+    result = original & "_" & $count
+    if not d.seenSymbols.hasKey(result):
+      d.seenSymbols[result] = ""
+      break
+    count += 1
+
+
+proc complexName(k: TSymKind, n: PNode, baseName: string): string =
+  ## Builds a complex unique href name for the node.
+  ##
+  ## Pass as ``baseName`` the plain symbol obtained from the nodeName. The
+  ## format of the returned symbol will be ``baseName(.callable type)?,(param
+  ## type)?(,param type)*``. The callable type part will be added only if the
+  ## node is not a proc, as those are the common ones. The suffix will be a dot
+  ## and a single letter representing the type of the callable. The parameter
+  ## types will be added with a preceeding dash. Return types won't be added.
+  ##
+  ## If you modify the output of this proc, please update the anchor generation
+  ## section of ``doc/docgen.txt``.
+  result = baseName
+  case k:
+  of skProc: result.add(defaultParamSeparator)
+  of skMacro: result.add(".m" & defaultParamSeparator)
+  of skMethod: result.add(".e" & defaultParamSeparator)
+  of skIterator: result.add(".i" & defaultParamSeparator)
+  of skTemplate: result.add(".t" & defaultParamSeparator)
+  of skConverter: result.add(".c" & defaultParamSeparator)
+  else: discard
+
+  if len(n) > paramsPos and n[paramsPos].kind == nkFormalParams:
+    result.add(renderParamTypes(n[paramsPos]))
+
+
+proc isCallable(n: PNode): bool =
+  ## Returns true if `n` contains a callable node.
+  case n.kind
+  of nkProcDef, nkMethodDef, nkIteratorDef, nkMacroDef, nkTemplateDef,
+    nkConverterDef: result = true
+  else:
+    result = false
+
+
+proc docstringSummary(rstText: string): string =
+  ## Returns just the first line or a brief chunk of text from a rst string.
+  ##
+  ## Most docstrings will contain a one liner summary, so stripping at the
+  ## first newline is usually fine. If after that the content is still too big,
+  ## it is stripped at the first comma, colon or dot, usual english sentence
+  ## separators.
+  ##
+  ## No guarantees are made on the size of the output, but it should be small.
+  ## Also, we hope to not break the rst, but maybe we do. If there is any
+  ## trimming done, an ellipsis unicode char is added.
+  const maxDocstringChars = 100
+  assert (rstText.len < 2 or (rstText[0] == '#' and rstText[1] == '#'))
+  result = rstText.substr(2).strip
+  var pos = result.find('\L')
+  if pos > 0:
+    result.delete(pos, result.len - 1)
+    result.add("…")
+  if pos < maxDocstringChars:
+    return
+  # Try to keep trimming at other natural boundaries.
+  pos = result.find({'.', ',', ':'})
+  let last = result.len - 1
+  if pos > 0 and pos < last:
+    result.delete(pos, last)
+    result.add("…")
+
+
 proc genItem(d: PDoc, n, nameNode: PNode, k: TSymKind) =
   if not isVisible(nameNode): return
-  var name = toRope(getName(d, nameNode))
+  let
+    name = getName(d, nameNode)
+    nameRope = name.toRope
+    plainDocstring = getPlainDocstring(n) # call here before genRecComment!
   var result: PRope = nil
-  var literal = ""
+  var literal, plainName = ""
   var kind = tkEof
   var comm = genRecComment(d, n)  # call this here for the side-effect!
   var r: TSrcGen
+  # Obtain the plain rendered string for hyperlink titles.
+  initTokRender(r, n, {renderNoBody, renderNoComments, renderDocComments,
+    renderNoPragmas, renderNoProcDefs})
+  while true:
+    getNextTok(r, kind, literal)
+    if kind == tkEof:
+      break
+    plainName.add(literal)
+
+  # Render the HTML hyperlink.
   initTokRender(r, n, {renderNoBody, renderNoComments, renderDocComments})
   while true:
     getNextTok(r, kind, literal)
@@ -247,15 +388,51 @@ proc genItem(d: PDoc, n, nameNode: PNode, k: TSymKind) =
       dispA(result, "<span class=\"Other\">$1</span>", "\\spanOther{$1}",
             [toRope(esc(d.target, literal))])
   inc(d.id)
-  app(d.section[k], ropeFormatNamedVars(getConfigVar("doc.item"),
-                                        ["name", "header", "desc", "itemID"],
-                                        [name, result, comm, toRope(d.id)]))
-  app(d.toc[k], ropeFormatNamedVars(getConfigVar("doc.item.toc"),
-                                    ["name", "header", "desc", "itemID"], [
-      toRope(getName(d, nameNode, d.splitAfter)), result, comm, toRope(d.id)]))
-  setIndexTerm(d[], $d.id, getName(d, nameNode))
+  let
+    plainNameRope = toRope(xmltree.escape(plainName.strip))
+    cleanPlainSymbol = renderPlainSymbolName(nameNode)
+    complexSymbol = complexName(k, n, cleanPlainSymbol)
+    plainSymbolRope = toRope(cleanPlainSymbol)
+    plainSymbolEncRope = toRope(encodeUrl(cleanPlainSymbol))
+    itemIDRope = toRope(d.id)
+    symbolOrId = d.newUniquePlainSymbol(complexSymbol)
+    symbolOrIdRope = symbolOrId.toRope
+    symbolOrIdEncRope = encodeUrl(symbolOrId).toRope
 
-proc genJSONItem(d: PDoc, n, nameNode: PNode, k: TSymKind): PJsonNode =
+  var seeSrcRope: PRope = nil
+  let docItemSeeSrc = getConfigVar("doc.item.seesrc")
+  if docItemSeeSrc.len > 0 and options.docSeeSrcUrl.len > 0:
+    # XXX toFilename doesn't really work. We need to ensure that this keeps
+    # returning a relative path.
+    let urlRope = ropeFormatNamedVars(options.docSeeSrcUrl,
+      ["path", "line"], [n.info.toFilename.toRope, toRope($n.info.line)])
+    dispA(seeSrcRope, "$1", "", [ropeFormatNamedVars(docItemSeeSrc,
+        ["path", "line", "url"], [n.info.toFilename.toRope,
+        toRope($n.info.line), urlRope])])
+
+  app(d.section[k], ropeFormatNamedVars(getConfigVar("doc.item"),
+    ["name", "header", "desc", "itemID", "header_plain", "itemSym",
+      "itemSymOrID", "itemSymEnc", "itemSymOrIDEnc", "seeSrc"],
+    [nameRope, result, comm, itemIDRope, plainNameRope, plainSymbolRope,
+      symbolOrIdRope, plainSymbolEncRope, symbolOrIdEncRope, seeSrcRope]))
+  app(d.toc[k], ropeFormatNamedVars(getConfigVar("doc.item.toc"),
+    ["name", "header", "desc", "itemID", "header_plain", "itemSym",
+      "itemSymOrID", "itemSymEnc", "itemSymOrIDEnc"],
+    [toRope(getName(d, nameNode, d.splitAfter)), result, comm,
+      itemIDRope, plainNameRope, plainSymbolRope, symbolOrIdRope,
+      plainSymbolEncRope, symbolOrIdEncRope]))
+
+  # Ironically for types the complexSymbol is *cleaner* than the plainName
+  # because it doesn't include object fields or documentation comments. So we
+  # use the plain one for callable elements, and the complex for the rest.
+  var linkTitle = changeFileExt(extractFilename(d.filename), "") & " : "
+  if n.isCallable: linkTitle.add(xmltree.escape(plainName.strip))
+  else: linkTitle.add(xmltree.escape(complexSymbol.strip))
+
+  setIndexTerm(d[], symbolOrId, name, linkTitle,
+    xmltree.escape(plainDocstring.docstringSummary))
+
+proc genJSONItem(d: PDoc, n, nameNode: PNode, k: TSymKind): JsonNode =
   if not isVisible(nameNode): return
   var
     name = getName(d, nameNode)
@@ -315,7 +492,7 @@ proc generateDoc*(d: PDoc, n: PNode) =
   of nkFromStmt, nkImportExceptStmt: traceDeps(d, n.sons[0])
   else: discard
 
-proc generateJson(d: PDoc, n: PNode, jArray: PJsonNode = nil): PJsonNode =
+proc generateJson(d: PDoc, n: PNode, jArray: JsonNode = nil): JsonNode =
   case n.kind
   of nkCommentStmt:
     if n.comment != nil and startsWith(n.comment, "##"):
@@ -360,7 +537,7 @@ proc generateJson(d: PDoc, n: PNode, jArray: PJsonNode = nil): PJsonNode =
 proc genSection(d: PDoc, kind: TSymKind) =
   const sectionNames: array[skModule..skTemplate, string] = [
     "Imports", "Types", "Vars", "Lets", "Consts", "Vars", "Procs", "Methods",
-    "Iterators", "Converters", "Macros", "Templates"
+    "Iterators", "Iterators", "Converters", "Macros", "Templates"
   ]
   if d.section[kind] == nil: return
   var title = sectionNames[kind].toRope
@@ -385,8 +562,14 @@ proc genOutFile(d: PDoc): PRope =
   if toc != nil:
     toc = ropeFormatNamedVars(getConfigVar("doc.toc"), ["content"], [toc])
   for i in countup(low(TSymKind), high(TSymKind)): app(code, d.section[i])
-  if d.meta[metaTitle].len != 0: title = d.meta[metaTitle]
-  else: title = "Module " & extractFilename(changeFileExt(d.filename, ""))
+
+  # Extract the title. Non API modules generate an entry in the index table.
+  if d.meta[metaTitle].len != 0:
+    title = d.meta[metaTitle]
+    setIndexTerm(d[], "", title)
+  else:
+    # Modules get an automatic title for the HTML, but no entry in the index.
+    title = "Module " & extractFilename(changeFileExt(d.filename, ""))
 
   let bodyname = if d.hasToc: "doc.body_toc" else: "doc.body_no_toc"
   content = ropeFormatNamedVars(getConfigVar(bodyname), ["title",
@@ -397,10 +580,10 @@ proc genOutFile(d: PDoc): PRope =
     # XXX what is this hack doing here? 'optCompileOnly' means raw output!?
     code = ropeFormatNamedVars(getConfigVar("doc.file"), ["title",
         "tableofcontents", "moduledesc", "date", "time",
-        "content", "author", "version"],
+        "content", "author", "version", "analytics"],
         [title.toRope, toc, d.modDesc, toRope(getDateStr()),
                      toRope(getClockStr()), content, d.meta[metaAuthor].toRope,
-                     d.meta[metaVersion].toRope])
+                     d.meta[metaVersion].toRope, d.analytics.toRope])
   else:
     code = content
   result = code
@@ -465,7 +648,8 @@ proc commandBuildIndex*() =
 
   let code = ropeFormatNamedVars(getConfigVar("doc.file"), ["title",
       "tableofcontents", "moduledesc", "date", "time",
-      "content", "author", "version"],
+      "content", "author", "version", "analytics"],
       ["Index".toRope, nil, nil, toRope(getDateStr()),
-                   toRope(getClockStr()), content, nil, nil])
+                   toRope(getClockStr()), content, nil, nil, nil])
+  # no analytics because context is not available
   writeRope(code, getOutFile("theindex", HtmlExt))

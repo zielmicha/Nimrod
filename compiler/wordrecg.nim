@@ -1,7 +1,7 @@
 #
 #
-#           The Nimrod Compiler
-#        (c) Copyright 2012 Andreas Rumpf
+#           The Nim Compiler
+#        (c) Copyright 2015 Andreas Rumpf
 #
 #    See the file "copying.txt", included in this
 #    distribution, for details about the copyright.
@@ -24,13 +24,13 @@ type
     
     wAddr, wAnd, wAs, wAsm, wAtomic, 
     wBind, wBlock, wBreak, wCase, wCast, wConst, 
-    wContinue, wConverter, wDiscard, wDistinct, wDiv, wDo, 
+    wContinue, wConverter, wDefer, wDiscard, wDistinct, wDiv, wDo, 
     wElif, wElse, wEnd, wEnum, wExcept, wExport,
-    wFinally, wFor, wFrom, wGeneric, wIf, wImport, wIn, 
-    wInclude, wInterface, wIs, wIsnot, wIterator, wLambda, wLet,
+    wFinally, wFor, wFrom, wFunc, wGeneric, wIf, wImport, wIn, 
+    wInclude, wInterface, wIs, wIsnot, wIterator, wLet,
     wMacro, wMethod, wMixin, wMod, wNil, 
     wNot, wNotin, wObject, wOf, wOr, wOut, wProc, wPtr, wRaise, wRef, wReturn, 
-    wShared, wShl, wShr, wStatic, wTemplate, wTry, wTuple, wType, wUsing, wVar, 
+    wShl, wShr, wStatic, wTemplate, wTry, wTuple, wType, wUsing, wVar, 
     wWhen, wWhile, wWith, wWithout, wXor, wYield,
     
     wColon, wColonColon, wEquals, wDot, wDotDot,
@@ -39,12 +39,13 @@ type
 
     wDestroy,
     
-    wImmediate, wDestructor, wDelegator,
+    wImmediate, wDestructor, wDelegator, wOverride,
     wImportCpp, wImportObjC,
     wImportCompilerProc,
     wImportc, wExportc, wIncompleteStruct, wRequiresInit,
     wAlign, wNodecl, wPure, wSideeffect, wHeader,
-    wNosideeffect, wNoreturn, wMerge, wLib, wDynlib, wCompilerproc, wProcVar, 
+    wNosideeffect, wGcSafe, wNoreturn, wMerge, wLib, wDynlib, 
+    wCompilerproc, wProcVar, 
     wFatal, wError, wWarning, wHint, wLine, wPush, wPop, wDefine, wUndef, 
     wLinedir, wStacktrace, wLinetrace, wLink, wCompile, 
     wLinksys, wDeprecated, wVarargs, wCallconv, wBreakpoint, wDebugger, 
@@ -60,10 +61,11 @@ type
     wPassc, wPassl, wBorrow, wDiscardable,
     wFieldChecks, 
     wWatchPoint, wSubsChar, 
-    wAcyclic, wShallow, wUnroll, wLinearScanEnd, wComputedGoto, wInjectStmt,
+    wAcyclic, wShallow, wUnroll, wLinearScanEnd, wComputedGoto, 
+    wInjectStmt, wExperimental,
     wWrite, wGensym, wInject, wDirty, wInheritable, wThreadVar, wEmit, 
-    wNoStackFrame,
-    wImplicitStatic, wGlobal, wCodegenDecl,
+    wAsmNoStackFrame,
+    wImplicitStatic, wGlobal, wCodegenDecl, wUnchecked, wGuard, wLocks,
 
     wAuto, wBool, wCatch, wChar, wClass,
     wConst_cast, wDefault, wDelete, wDouble, wDynamic_cast,
@@ -72,7 +74,7 @@ type
     wPrivate, wProtected, wPublic, wRegister, wReinterpret_cast,
     wShort, wSigned, wSizeof, wStatic_cast, wStruct, wSwitch,
     wThis, wThrow, wTrue, wTypedef, wTypeid, wTypename,
-    wUnion, wUnsigned, wVirtual, wVoid, wVolatile, wWchar_t,
+    wUnion, wPacked, wUnsigned, wVirtual, wVoid, wVolatile, wWchar_t,
 
     wAlignas, wAlignof, wConstexpr, wDecltype, wNullptr, wNoexcept,
     wThread_local, wStatic_assert, wChar16_t, wChar32_t,
@@ -102,15 +104,15 @@ const
     "addr", "and", "as", "asm", "atomic", 
     "bind", "block", "break", "case", "cast", 
     "const", "continue", "converter",
-    "discard", "distinct", "div", "do",
+    "defer", "discard", "distinct", "div", "do",
     "elif", "else", "end", "enum", "except", "export", 
-    "finally", "for", "from", "generic", "if", 
+    "finally", "for", "from", "func", "generic", "if", 
     "import", "in", "include", "interface", "is", "isnot", "iterator",
-    "lambda", "let",
+    "let",
     "macro", "method", "mixin", "mod", "nil", "not", "notin",
     "object", "of", "or", 
     "out", "proc", "ptr", "raise", "ref", "return",
-    "shared", "shl", "shr", "static",
+    "shl", "shr", "static",
     "template", "try", "tuple", "type", "using", "var", 
     "when", "while", "with", "without", "xor",
     "yield",
@@ -121,11 +123,11 @@ const
 
     "destroy",
     
-    "immediate", "destructor", "delegator",
+    "immediate", "destructor", "delegator", "override",
     "importcpp", "importobjc",
     "importcompilerproc", "importc", "exportc", "incompletestruct",
     "requiresinit", "align", "nodecl", "pure", "sideeffect",
-    "header", "nosideeffect", "noreturn", "merge", "lib", "dynlib", 
+    "header", "nosideeffect", "gcsafe", "noreturn", "merge", "lib", "dynlib", 
     "compilerproc", "procvar", "fatal", "error", "warning", "hint", "line", 
     "push", "pop", "define", "undef", "linedir", "stacktrace", "linetrace", 
     "link", "compile", "linksys", "deprecated", "varargs", 
@@ -143,9 +145,10 @@ const
     "passc", "passl", "borrow", "discardable", "fieldchecks",
     "watchpoint",
     "subschar", "acyclic", "shallow", "unroll", "linearscanend",
-    "computedgoto", "injectstmt",
+    "computedgoto", "injectstmt", "experimental",
     "write", "gensym", "inject", "dirty", "inheritable", "threadvar", "emit",
-    "nostackframe", "implicitstatic", "global", "codegendecl",
+    "asmnostackframe", "implicitstatic", "global", "codegendecl", "unchecked",
+    "guard", "locks",
     
     "auto", "bool", "catch", "char", "class",
     "const_cast", "default", "delete", "double",
@@ -155,7 +158,7 @@ const
     "private", "protected", "public", "register", "reinterpret_cast",
     "short", "signed", "sizeof", "static_cast", "struct", "switch",
     "this", "throw", "true", "typedef", "typeid",
-    "typename", "union", "unsigned", "virtual", "void", "volatile",
+    "typename", "union", "packed", "unsigned", "virtual", "void", "volatile",
     "wchar_t",
 
     "alignas", "alignof", "constexpr", "decltype", "nullptr", "noexcept",

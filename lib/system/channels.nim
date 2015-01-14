@@ -1,7 +1,7 @@
 #
 #
-#            Nimrod's Runtime Library
-#        (c) Copyright 2012 Andreas Rumpf
+#            Nim's Runtime Library
+#        (c) Copyright 2015 Andreas Rumpf
 #
 #    See the file "copying.txt", included in this
 #    distribution, for details about the copyright.
@@ -14,7 +14,7 @@
 ## **Note:** The current implementation of message passing is slow and does
 ## not work with cyclic data structures.
   
-when not defined(NimString): 
+when not declared(NimString):
   {.error: "You must not import this module explicitly".}
 
 type
@@ -29,7 +29,7 @@ type
     region: TMemRegion
   PRawChannel = ptr TRawChannel
   TLoadStoreMode = enum mStore, mLoad
-  TChannel*[TMsg] = TRawChannel ## a channel for thread communication
+  TChannel* {.gcsafe.}[TMsg] = TRawChannel ## a channel for thread communication
 
 const ChannelDeadMask = -2
 
@@ -49,12 +49,12 @@ proc deinitRawChannel(p: pointer) =
   deinitSysCond(c.cond)
 
 proc storeAux(dest, src: pointer, mt: PNimType, t: PRawChannel, 
-              mode: TLoadStoreMode)
+              mode: TLoadStoreMode) {.benign.}
 proc storeAux(dest, src: pointer, n: ptr TNimNode, t: PRawChannel,
-              mode: TLoadStoreMode) =
+              mode: TLoadStoreMode) {.benign.} =
   var
-    d = cast[TAddress](dest)
-    s = cast[TAddress](src)
+    d = cast[ByteAddress](dest)
+    s = cast[ByteAddress](src)
   case n.kind
   of nkSlot: storeAux(cast[pointer](d +% n.offset), 
                       cast[pointer](s +% n.offset), n.typ, t, mode)
@@ -70,14 +70,14 @@ proc storeAux(dest, src: pointer, n: ptr TNimNode, t: PRawChannel,
 proc storeAux(dest, src: pointer, mt: PNimType, t: PRawChannel, 
               mode: TLoadStoreMode) =
   var
-    d = cast[TAddress](dest)
-    s = cast[TAddress](src)
+    d = cast[ByteAddress](dest)
+    s = cast[ByteAddress](src)
   sysAssert(mt != nil, "mt == nil")
-  case mt.Kind
+  case mt.kind
   of tyString:
     if mode == mStore:
-      var x = cast[ppointer](dest)
-      var s2 = cast[ppointer](s)[]
+      var x = cast[PPointer](dest)
+      var s2 = cast[PPointer](s)[]
       if s2 == nil: 
         x[] = nil
       else:
@@ -86,17 +86,17 @@ proc storeAux(dest, src: pointer, mt: PNimType, t: PRawChannel,
         copyMem(ns, ss, ss.len+1 + GenericSeqSize)
         x[] = ns
     else:
-      var x = cast[ppointer](dest)
-      var s2 = cast[ppointer](s)[]
+      var x = cast[PPointer](dest)
+      var s2 = cast[PPointer](s)[]
       if s2 == nil:
         unsureAsgnRef(x, s2)
       else:
         unsureAsgnRef(x, copyString(cast[NimString](s2)))
         dealloc(t.region, s2)
   of tySequence:
-    var s2 = cast[ppointer](src)[]
+    var s2 = cast[PPointer](src)[]
     var seq = cast[PGenericSeq](s2)
-    var x = cast[ppointer](dest)
+    var x = cast[PPointer](dest)
     if s2 == nil:
       if mode == mStore:
         x[] = nil
@@ -108,13 +108,13 @@ proc storeAux(dest, src: pointer, mt: PNimType, t: PRawChannel,
         x[] = alloc(t.region, seq.len *% mt.base.size +% GenericSeqSize)
       else:
         unsureAsgnRef(x, newObj(mt, seq.len * mt.base.size + GenericSeqSize))
-      var dst = cast[taddress](cast[ppointer](dest)[])
+      var dst = cast[ByteAddress](cast[PPointer](dest)[])
       for i in 0..seq.len-1:
         storeAux(
           cast[pointer](dst +% i*% mt.base.size +% GenericSeqSize),
-          cast[pointer](cast[TAddress](s2) +% i *% mt.base.size +%
+          cast[pointer](cast[ByteAddress](s2) +% i *% mt.base.size +%
                         GenericSeqSize),
-          mt.Base, t, mode)
+          mt.base, t, mode)
       var dstseq = cast[PGenericSeq](dst)
       dstseq.len = seq.len
       dstseq.reserved = seq.len
@@ -134,8 +134,8 @@ proc storeAux(dest, src: pointer, mt: PNimType, t: PRawChannel,
       storeAux(cast[pointer](d +% i*% mt.base.size),
                cast[pointer](s +% i*% mt.base.size), mt.base, t, mode)
   of tyRef:
-    var s = cast[ppointer](src)[]
-    var x = cast[ppointer](dest)
+    var s = cast[PPointer](src)[]
+    var x = cast[PPointer](dest)
     if s == nil:
       if mode == mStore:
         x[] = nil
@@ -192,7 +192,7 @@ template lockChannel(q: expr, action: stmt) {.immediate.} =
 
 template sendImpl(q: expr) {.immediate.} =  
   if q.mask == ChannelDeadMask:
-    sysFatal(EDeadThread, "cannot send message; thread died")
+    sysFatal(DeadThreadError, "cannot send message; thread died")
   acquireSys(q.lock)
   var m: TMsg
   shallowCopy(m, msg)
@@ -209,26 +209,39 @@ proc send*[TMsg](c: var TChannel[TMsg], msg: TMsg) =
 
 proc llRecv(q: PRawChannel, res: pointer, typ: PNimType) =
   # to save space, the generic is as small as possible
-  acquireSys(q.lock)
   q.ready = true
   while q.count <= 0:
     waitSysCond(q.cond, q.lock)
   q.ready = false
   if typ != q.elemType:
     releaseSys(q.lock)
-    sysFatal(EInvalidValue, "cannot receive message of wrong type")
+    sysFatal(ValueError, "cannot receive message of wrong type")
   rawRecv(q, res, typ)
-  releaseSys(q.lock)
 
 proc recv*[TMsg](c: var TChannel[TMsg]): TMsg =
   ## receives a message from the channel `c`. This blocks until
   ## a message has arrived! You may use ``peek`` to avoid the blocking.
   var q = cast[PRawChannel](addr(c))
+  acquireSys(q.lock)
   llRecv(q, addr(result), cast[PNimType](getTypeInfo(result)))
+  releaseSys(q.lock)
+
+proc tryRecv*[TMsg](c: var TChannel[TMsg]): tuple[dataAvailable: bool,
+                                                  msg: TMsg] =
+  ## try to receives a message from the channel `c` if available. Otherwise
+  ## it returns ``(false, default(msg))``.
+  var q = cast[PRawChannel](addr(c))
+  if q.mask != ChannelDeadMask:
+    if tryAcquireSys(q.lock):
+      if q.count > 0:
+        llRecv(q, addr(result.msg), cast[PNimType](getTypeInfo(result.msg)))
+        result.dataAvailable = true
+      releaseSys(q.lock)
 
 proc peek*[TMsg](c: var TChannel[TMsg]): int =
   ## returns the current number of messages in the channel `c`. Returns -1
-  ## if the channel has been closed.
+  ## if the channel has been closed. **Note**: This is dangerous to use
+  ## as it encourages races. It's much better to use ``tryRecv`` instead.
   var q = cast[PRawChannel](addr(c))
   if q.mask != ChannelDeadMask:
     lockChannel(q):
